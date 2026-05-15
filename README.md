@@ -52,7 +52,7 @@ Required LazyCat provider pieces are included:
 
 - `package.yml` grants `lightos.manage` and hides the app from the launcher.
 - `lzc-build.yml` builds the Rust binary, builds frontend assets, and exports `lightos.webshell`.
-- `resources/lightos.webshell/default/webshell-provider.json` declares `root_path: "/"`.
+- `resources/lightos.webshell/default/webshell-provider.json` declares `root_path: "/"` and `support_home: true` so lightos-admin can host the provider in its normal WebShell view instead of launching a separate page.
 - `lzc-manifest.yml` routes `/` to the provider executable.
 
 Build a release with:

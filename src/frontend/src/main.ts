@@ -601,6 +601,7 @@ function applySettings() {
   elements.fontFamily.value = font.id;
   elements.tabLayout.value = settings.tabLayout;
   elements.webshell.dataset.tabLayout = settings.tabLayout;
+  updateTabChrome();
   elements.removeFont.disabled = !font.custom;
   settings.themeId = theme.id;
   settings.fontFamilyId = font.id;
@@ -1061,6 +1062,7 @@ function activatePane(tabId: string, paneId: string) {
 }
 
 function renderTabs() {
+  updateTabChrome();
   if (!tabs.length) {
     elements.tabList.innerHTML = `<div class="empty-tab">No sessions</div>`;
     updateIcons();
@@ -1070,12 +1072,13 @@ function renderTabs() {
     const active = tab.id === activeTabId;
     const renaming = renamingTabId === tab.id;
     const displayName = tabDisplayName(tab);
+    const named = Boolean(tab.customTitle?.trim());
     const title = tabCurrentTitle(tab);
     const label = renaming
       ? `<input class="tab-rename" data-rename-tab="${escapeAttr(tab.id)}" value="${escapeAttr(displayName)}" aria-label="Rename tab" spellcheck="false" />`
       : `<span class="tab-title">${escapeHtml(displayName)}</span>`;
     return `
-      <div class="tab ${active ? "active" : ""}">
+      <div class="tab ${active ? "active" : ""} ${named ? "named" : ""}">
         <div class="tab-main" id="tab-${escapeAttr(tab.id)}" role="tab" tabindex="0" aria-selected="${active}" data-tab-id="${escapeAttr(tab.id)}" title="${escapeAttr(title)}">
           <span class="tab-status" data-tone="${tabTone(tab)}"></span>
           ${label}
@@ -1134,6 +1137,10 @@ function renderTabs() {
   });
   updateIcons();
   focusRenameInput();
+}
+
+function updateTabChrome() {
+  elements.webshell.classList.toggle("has-named-tabs", tabs.some((tab) => Boolean(tab.customTitle?.trim())));
 }
 
 function tabDisplayName(tab: TerminalTab): string {
