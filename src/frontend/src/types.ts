@@ -5,6 +5,9 @@ import type { Session } from "./gen/lazycat/webshell/v1/capability_pb";
 export type Tone = "ok" | "error" | "neutral";
 export type TabLayout = "horizontal" | "vertical";
 export type CursorShape = "block" | "bar" | "underline";
+export type SplitPlacement = "up" | "down" | "left" | "right";
+export type SplitAxis = "rows" | "columns";
+export type LocaleSetting = "auto" | "en" | "zh-CN";
 
 export type TerminalTheme = {
   id: string;
@@ -30,6 +33,7 @@ export type StoredFont = {
 };
 
 export type Settings = {
+  locale: LocaleSetting;
   themeId: string;
   fontFamilyId: string;
   tabLayout: TabLayout;
@@ -74,5 +78,6 @@ export type TerminalTab = {
   mount: HTMLDivElement;
   panes: TerminalPane[];
   activePaneId?: string;
+  splitAxis: SplitAxis;
   closing: boolean;
 };

@@ -19,11 +19,12 @@ import {
   THEMES,
 } from "./config";
 import { CapabilityService, type Instance } from "./gen/lazycat/webshell/v1/capability_pb";
+import { translate, type MessageKey } from "./i18n";
 import { keyEventToTerminalSequence } from "./keyboard";
 import { loadSettings, saveSettings as persistSettings } from "./settings";
 import { renderShell } from "./shell";
-import type { FontPreset, StoredFont, TerminalPane, TerminalTab, TerminalTheme, Tone } from "./types";
-import { clampNumber, errorMessage, escapeAttr, escapeHtml, newId, qs, selectorLabel } from "./utils";
+import type { FontPreset, SplitPlacement, StoredFont, TerminalPane, TerminalTab, TerminalTheme, Tone } from "./types";
+import { clampNumber, errorMessage, escapeAttr, escapeHtml, newId, selectorLabel } from "./utils";
 
 const transport = createConnectTransport({ baseUrl: window.location.origin });
 const client = createClient(CapabilityService, transport);
@@ -44,7 +45,7 @@ let contextPaneId: string | undefined;
 let customFonts: FontPreset[] = [];
 const loadedFontFaces = new Map<string, FontFace>();
 
-init().catch((error) => setGlobalStatus(`Startup failed: ${errorMessage(error)}`, "error"));
+init().catch((error) => setGlobalStatus(tr("status.startupFailed", { message: errorMessage(error) }), "error"));
 
 async function init() {
   await loadUploadedFonts();
@@ -65,6 +66,26 @@ function saveSettings() {
   persistSettings(settings);
 }
 
+function tr(key: MessageKey, values?: Record<string, string | number>): string {
+  return translate(settings.locale, key, values);
+}
+
+function applyI18n() {
+  document.documentElement.lang = settings.locale === "zh-CN" ? "zh-CN" : settings.locale === "en" ? "en" : navigator.language || "en";
+  document.querySelectorAll<HTMLElement>("[data-i18n]").forEach((element) => {
+    const key = element.dataset.i18n as MessageKey | undefined;
+    if (key) element.textContent = tr(key);
+  });
+  document.querySelectorAll<HTMLElement>("[data-i18n-title]").forEach((element) => {
+    const key = element.dataset.i18nTitle as MessageKey | undefined;
+    if (key) element.title = tr(key);
+  });
+  document.querySelectorAll<HTMLElement>("[data-i18n-aria]").forEach((element) => {
+    const key = element.dataset.i18nAria as MessageKey | undefined;
+    if (key) element.setAttribute("aria-label", tr(key));
+  });
+}
+
 function renderOptions() {
   elements.themeSelect.innerHTML = THEMES.map(
     (theme) => `<option value="${theme.id}">${theme.label}</option>`,
@@ -73,16 +94,24 @@ function renderOptions() {
     (font) => `<option value="${font.id}">${escapeHtml(font.label)}</option>`,
   ).join("");
   elements.fontFamily.innerHTML = `
-    <optgroup label="Built in">
+    <optgroup label="${escapeAttr(tr("font.builtIn"))}">
       ${FONT_PRESETS.map((font) => `<option value="${font.id}">${font.label}</option>`).join("")}
     </optgroup>
-    <optgroup label="Uploaded">
-      ${customOptions || "<option disabled>No uploaded fonts</option>"}
+    <optgroup label="${escapeAttr(tr("font.uploaded"))}">
+      ${customOptions || `<option disabled>${escapeHtml(tr("font.noUploaded"))}</option>`}
     </optgroup>
   `;
 }
 
 function bindSettings() {
+  elements.localeSelect.addEventListener("change", () => {
+    settings.locale = elements.localeSelect.value === "en" || elements.localeSelect.value === "zh-CN"
+      ? elements.localeSelect.value
+      : "auto";
+    saveSettings();
+    renderOptions();
+    applySettings();
+  });
   elements.themeSelect.addEventListener("change", () => {
     settings.themeId = elements.themeSelect.value;
     saveSettings();
@@ -91,7 +120,7 @@ function bindSettings() {
   elements.fontFamily.addEventListener("change", () => {
     settings.fontFamilyId = elements.fontFamily.value;
     saveSettings();
-    applySettings();
+    applySettings({ resizeTerminals: true });
   });
   elements.tabLayout.addEventListener("change", () => {
     settings.tabLayout = elements.tabLayout.value === "vertical" ? "vertical" : "horizontal";
@@ -102,12 +131,12 @@ function bindSettings() {
   elements.fontSize.addEventListener("input", () => {
     settings.fontSize = Number(elements.fontSize.value);
     saveSettings();
-    applySettings();
+    applySettings({ resizeTerminals: true });
   });
   elements.lineHeight.addEventListener("input", () => {
     settings.lineHeight = Number(elements.lineHeight.value);
     saveSettings();
-    applySettings();
+    applySettings({ resizeTerminals: true });
   });
   elements.scrollbackLimit.addEventListener("change", () => {
     settings.scrollbackLimit = Math.round(
@@ -193,6 +222,12 @@ function bindActions() {
     } else if (event.code === "ArrowDown") {
       event.preventDefault();
       void splitActivePane("down");
+    } else if (event.code === "ArrowLeft") {
+      event.preventDefault();
+      void splitActivePane("left");
+    } else if (event.code === "ArrowRight") {
+      event.preventDefault();
+      void splitActivePane("right");
     }
   });
   document.addEventListener("beforeinput", (event) => {
@@ -279,19 +314,24 @@ async function runPaneMenuAction(action: string) {
     await splitActivePane("up");
   } else if (action === "split-down") {
     await splitActivePane("down");
+  } else if (action === "split-left") {
+    await splitActivePane("left");
+  } else if (action === "split-right") {
+    await splitActivePane("right");
   } else if (action === "copy-selection") {
     await copySelection(true);
   }
 }
 
-function applySettings() {
+function applySettings(options: { resizeTerminals?: boolean } = {}) {
   const theme = currentTheme();
   const font = currentFont();
+  applyI18n();
+  elements.localeSelect.value = settings.locale;
   elements.themeSelect.value = theme.id;
   elements.fontFamily.value = font.id;
   elements.tabLayout.value = settings.tabLayout;
   elements.webshell.dataset.tabLayout = settings.tabLayout;
-  updateTabChrome();
   elements.removeFont.disabled = !font.custom;
   settings.themeId = theme.id;
   settings.fontFamilyId = font.id;
@@ -307,9 +347,11 @@ function applySettings() {
 
   for (const pane of allPanes()) {
     applyThemeToMount(pane.mount);
-    pane.term?.resize(pane.term.cols, pane.term.rows);
-    requestAnimationFrame(() => pane.term?.resize(pane.term?.cols ?? pane.cols, pane.term?.rows ?? pane.rows));
+    if (options.resizeTerminals) {
+      pane.term?.resize(pane.term.cols, pane.term.rows);
+    }
   }
+  renderTabs();
   updateActiveDetails();
 }
 
@@ -355,9 +397,9 @@ async function loadUploadedFonts() {
     const fonts = await response.json() as StoredFont[];
     const loaded = await Promise.all(fonts.map(registerStoredFont));
     customFonts = loaded.filter((font): font is FontPreset => Boolean(font));
-    setFontStatus(customFonts.length ? `${customFonts.length} uploaded font(s) ready` : "");
+    setFontStatus(customFonts.length ? tr("status.fontsReady", { count: customFonts.length }) : "");
   } catch (error) {
-    setFontStatus(`Font load failed: ${errorMessage(error)}`, "error");
+    setFontStatus(tr("status.fontLoadFailed", { message: errorMessage(error) }), "error");
   }
 }
 
@@ -381,15 +423,15 @@ async function uploadFont() {
     }
     const stored = await response.json() as StoredFont;
     const preset = await registerStoredFont(stored);
-    if (!preset) throw new Error("font registration failed");
+    if (!preset) throw new Error(tr("status.fontRegistrationFailed"));
     customFonts = [...customFonts.filter((font) => font.id !== preset.id), preset];
     settings.fontFamilyId = preset.id;
     saveSettings();
     renderOptions();
-    applySettings();
-    setFontStatus(`${preset.label} ready`, "ok");
+    applySettings({ resizeTerminals: true });
+    setFontStatus(tr("status.fontReady", { name: preset.label }), "ok");
   } catch (error) {
-    setFontStatus(`Font upload failed: ${errorMessage(error)}`, "error");
+    setFontStatus(tr("status.fontUploadFailed", { message: errorMessage(error) }), "error");
   }
 }
 
@@ -402,7 +444,7 @@ async function removeSelectedFont() {
     credentials: "same-origin",
   });
   if (!response.ok && response.status !== 404) {
-    setFontStatus(`Font delete failed: ${await response.text()}`, "error");
+    setFontStatus(tr("status.fontDeleteFailed", { message: await response.text() }), "error");
     return;
   }
   const face = loadedFontFaces.get(font.id);
@@ -414,20 +456,20 @@ async function removeSelectedFont() {
   settings.fontFamilyId = DEFAULT_SETTINGS.fontFamilyId;
   saveSettings();
   renderOptions();
-  applySettings();
-  setFontStatus(`${font.label} removed`);
+  applySettings({ resizeTerminals: true });
+  setFontStatus(tr("status.fontRemoved", { name: font.label }));
 }
 
 function validateFontFile(file: File) {
   const lowerName = file.name.toLowerCase();
   if (!FONT_EXTENSIONS.some((extension) => lowerName.endsWith(extension))) {
-    throw new Error("only .woff, .woff2, .ttf, and .otf are allowed");
+    throw new Error(tr("validation.fontExtension"));
   }
   if (file.type && !FONT_MIME_TYPES.has(file.type)) {
-    throw new Error(`unsupported font MIME type: ${file.type}`);
+    throw new Error(tr("validation.fontMime", { mimeType: file.type }));
   }
   if (file.size <= 0 || file.size > MAX_FONT_BYTES) {
-    throw new Error("font must be between 1 byte and 10 MB");
+    throw new Error(tr("validation.fontSize"));
   }
 }
 
@@ -474,16 +516,16 @@ function setFontStatus(message: string, tone: Tone = "neutral") {
 }
 
 async function loadInstances() {
-  setGlobalStatus("Loading instances...");
+  setGlobalStatus(tr("status.loadingInstances"));
   try {
     const response = await client.listInstances({});
     instances = response.instances;
     selectDefaultInstance();
     renderInstances();
-    setGlobalStatus(instances.length ? "Instances loaded" : "No instances returned");
+    setGlobalStatus(instances.length ? tr("status.instancesLoaded") : tr("status.noInstances"));
   } catch (error) {
     renderInstances();
-    setGlobalStatus(`Instance load failed: ${errorMessage(error)}`, "error");
+    setGlobalStatus(tr("status.instanceLoadFailed", { message: errorMessage(error) }), "error");
   }
 }
 
@@ -492,13 +534,13 @@ function selectDefaultInstance() {
   if (selected) return;
   const running = instances.find((instance) => instance.status === "running" && instance.selector);
   selectedSelector = running?.selector ?? selectedSelector;
-  elements.targetLabel.textContent = selectedSelector ? selectorLabel(selectedSelector) : "No instance selected";
+  elements.targetLabel.textContent = selectedSelector ? selectorLabel(selectedSelector) : tr("status.noTarget");
   elements.instanceStatusDot.dataset.status = selectedSelector ? selectedInstance()?.status ?? "unknown" : "unknown";
 }
 
 function renderInstances() {
   if (!instances.length) {
-    elements.instanceList.innerHTML = `<div class="empty">No LightOS instances visible.</div>`;
+    elements.instanceList.innerHTML = `<div class="empty">${escapeHtml(tr("status.noInstancesVisible"))}</div>`;
     return;
   }
   elements.instanceList.innerHTML = instances.map((instance) => {
@@ -517,7 +559,7 @@ function renderInstances() {
   elements.instanceList.querySelectorAll<HTMLButtonElement>(".instance-row").forEach((button) => {
     button.addEventListener("click", () => {
       selectedSelector = button.dataset.selector ?? "";
-      elements.targetLabel.textContent = selectedSelector ? selectorLabel(selectedSelector) : "No instance selected";
+      elements.targetLabel.textContent = selectedSelector ? selectorLabel(selectedSelector) : tr("status.noTarget");
       closeInstanceMenu();
       renderInstances();
     });
@@ -526,7 +568,7 @@ function renderInstances() {
 
 async function createSelectedTab() {
   if (!selectedSelector) {
-    setGlobalStatus("Select a running instance first.", "error");
+    setGlobalStatus(tr("status.selectRunningInstance"), "error");
     return;
   }
   await createTerminalTab(selectedSelector);
@@ -553,6 +595,7 @@ function makeTab(selector: string): TerminalTab {
     label: selectorLabel(selector),
     mount,
     panes: [],
+    splitAxis: "rows",
     closing: false,
   };
 }
@@ -588,9 +631,9 @@ function makePane(tab: TerminalTab): TerminalPane {
     selector: tab.selector,
     label: tab.label,
     title: tab.label,
-    status: "Idle",
+    status: tr("status.idle"),
     tone: "neutral",
-    controlState: "human ready",
+    controlState: tr("status.controlReady"),
     mount,
     reconnectDelay: 1000,
     closing: false,
@@ -599,18 +642,20 @@ function makePane(tab: TerminalTab): TerminalPane {
   };
 }
 
-async function createPane(tab: TerminalTab, placement: "up" | "down") {
+async function createPane(tab: TerminalTab, placement: SplitPlacement) {
   const pane = makePane(tab);
   const referencePane = activePane(tab);
   const referenceIndex = referencePane ? tab.panes.findIndex((item) => item.id === referencePane.id) : -1;
-  const insertIndex = referenceIndex < 0 ? tab.panes.length : placement === "up" ? referenceIndex : referenceIndex + 1;
+  tab.splitAxis = placement === "left" || placement === "right" ? "columns" : "rows";
+  const insertBefore = placement === "up" || placement === "left";
+  const insertIndex = referenceIndex < 0 ? tab.panes.length : insertBefore ? referenceIndex : referenceIndex + 1;
   tab.panes.splice(insertIndex, 0, pane);
   const nextSibling = tab.mount.children[insertIndex] ?? null;
   tab.mount.insertBefore(pane.mount, nextSibling);
   tab.activePaneId = pane.id;
   renderPaneLayout(tab);
-  activatePane(tab.id, pane.id);
-  setPaneStatus(pane, "Creating session...");
+  activatePane(tab.id, pane.id, { focus: false });
+  setPaneStatus(pane, tr("status.creatingSession"));
 
   try {
     const response = await client.createSession({
@@ -620,15 +665,15 @@ async function createPane(tab: TerminalTab, placement: "up" | "down") {
       metadata: { frontend: "wterm-ghostty", tabId: tab.id, paneId: pane.id, split: placement },
     });
     pane.session = response.session;
-    setPaneStatus(pane, "Loading Ghostty core...");
+    setPaneStatus(pane, tr("status.loadingGhostty"));
     await mountTerminal(pane);
     openSocket(pane);
   } catch (error) {
-    setPaneStatus(pane, `Connect failed: ${errorMessage(error)}`, "error");
+    setPaneStatus(pane, tr("status.connectFailed", { message: errorMessage(error) }), "error");
   }
 }
 
-async function splitActivePane(placement: "up" | "down") {
+async function splitActivePane(placement: SplitPlacement) {
   const tab = activeTab();
   if (!tab) {
     await createSelectedTab();
@@ -638,15 +683,19 @@ async function splitActivePane(placement: "up" | "down") {
 }
 
 function renderPaneLayout(tab: TerminalTab) {
-  tab.mount.style.gridTemplateRows = `repeat(${Math.max(1, tab.panes.length)}, minmax(0, 1fr))`;
+  const paneCount = Math.max(1, tab.panes.length);
+  const rowTemplate = `repeat(${paneCount}, minmax(0, 1fr))`;
+  const columnTemplate = `repeat(${paneCount}, minmax(260px, 1fr))`;
+  tab.mount.dataset.splitAxis = tab.splitAxis;
+  tab.mount.style.gridTemplateRows = tab.splitAxis === "rows" ? rowTemplate : "";
+  tab.mount.style.gridTemplateColumns = tab.splitAxis === "columns" ? columnTemplate : "";
+  updatePaneActiveState(tab);
+}
+
+function updatePaneActiveState(tab: TerminalTab) {
   for (const pane of tab.panes) {
     pane.mount.classList.toggle("active-pane", pane.id === tab.activePaneId);
   }
-  requestAnimationFrame(() => {
-    for (const pane of tab.panes) {
-      pane.term?.resize(pane.term.cols, pane.term.rows);
-    }
-  });
 }
 
 async function mountTerminal(pane: TerminalPane) {
@@ -701,14 +750,14 @@ function openSocket(pane: TerminalPane) {
   pane.socket.binaryType = "arraybuffer";
   pane.socket.addEventListener("open", () => {
     pane.reconnectDelay = 1000;
-    setPaneStatus(pane, "Connected", "ok");
+    setPaneStatus(pane, tr("status.connected"), "ok");
     if (activeTabId === pane.tabId && activePane()?.id === pane.id) {
       pane.term?.focus();
     }
   });
   pane.socket.addEventListener("message", (event) => handleSocketMessage(pane, event));
   pane.socket.addEventListener("close", () => scheduleReconnect(pane));
-  pane.socket.addEventListener("error", () => setPaneStatus(pane, "Socket error", "error"));
+  pane.socket.addEventListener("error", () => setPaneStatus(pane, tr("status.socketError"), "error"));
 }
 
 function handleSocketMessage(pane: TerminalPane, event: MessageEvent) {
@@ -726,9 +775,9 @@ function handleSocketMessage(pane: TerminalPane, event: MessageEvent) {
 function handleServerText(pane: TerminalPane, text: string) {
   try {
     const event = JSON.parse(text) as { type?: string; message?: string; exit_code?: number };
-    if (event.type === "ready") setPaneStatus(pane, "Shell ready", "ok");
-    if (event.type === "error") setPaneStatus(pane, event.message ?? "Terminal error", "error");
-    if (event.type === "process-exit") setPaneStatus(pane, `Process exited: ${event.exit_code ?? -1}`, "error");
+    if (event.type === "ready") setPaneStatus(pane, tr("status.shellReady"), "ok");
+    if (event.type === "error") setPaneStatus(pane, event.message ?? tr("status.terminalError"), "error");
+    if (event.type === "process-exit") setPaneStatus(pane, tr("status.processExited", { code: event.exit_code ?? -1 }), "error");
   } catch {
     pane.term?.write(text);
   }
@@ -739,7 +788,7 @@ function scheduleReconnect(pane: TerminalPane) {
   window.clearTimeout(pane.reconnectTimer);
   const delay = pane.reconnectDelay;
   pane.reconnectDelay = Math.min(pane.reconnectDelay * 2, 30000);
-  setPaneStatus(pane, `Disconnected. Reconnecting in ${Math.round(delay / 1000)}s...`, "error");
+  setPaneStatus(pane, tr("status.reconnecting", { seconds: Math.round(delay / 1000) }), "error");
   pane.reconnectTimer = window.setTimeout(() => openSocket(pane), delay);
 }
 
@@ -755,21 +804,23 @@ function activateTab(tabId: string) {
   activePane()?.term?.focus();
 }
 
-function activatePane(tabId: string, paneId: string) {
+function activatePane(tabId: string, paneId: string, options: { focus?: boolean } = {}) {
   const tab = tabs.find((item) => item.id === tabId);
   if (!tab) return;
   activeTabId = tabId;
   tab.activePaneId = paneId;
-  renderPaneLayout(tab);
+  updatePaneActiveState(tab);
   renderTabs();
   updateActiveDetails();
-  activePane(tab)?.term?.focus();
+  if (options.focus !== false) {
+    activePane(tab)?.term?.focus();
+  }
 }
 
 function renderTabs() {
   updateTabChrome();
   if (!tabs.length) {
-    elements.tabList.innerHTML = `<div class="empty-tab">No sessions</div>`;
+    elements.tabList.innerHTML = `<div class="empty-tab">${escapeHtml(tr("status.noSessions"))}</div>`;
     updateIcons();
     return;
   }
@@ -780,7 +831,7 @@ function renderTabs() {
     const named = Boolean(tab.customTitle?.trim());
     const title = tabCurrentTitle(tab);
     const label = renaming
-      ? `<input class="tab-rename" data-rename-tab="${escapeAttr(tab.id)}" value="${escapeAttr(displayName)}" aria-label="Rename tab" spellcheck="false" />`
+      ? `<input class="tab-rename" data-rename-tab="${escapeAttr(tab.id)}" value="${escapeAttr(displayName)}" aria-label="${escapeAttr(tr("action.renameTab"))}" spellcheck="false" />`
       : `<span class="tab-title">${escapeHtml(displayName)}</span>`;
     return `
       <div class="tab ${active ? "active" : ""} ${named ? "named" : ""}">
@@ -788,7 +839,7 @@ function renderTabs() {
           <span class="tab-status" data-tone="${tabTone(tab)}"></span>
           ${label}
         </div>
-        <button class="tab-close" data-close-tab="${escapeAttr(tab.id)}" type="button" aria-label="Close tab" title="Close tab">
+        <button class="tab-close" data-close-tab="${escapeAttr(tab.id)}" type="button" aria-label="${escapeAttr(tr("action.closeTab"))}" title="${escapeAttr(tr("action.closeTab"))}">
           <i data-lucide="x"></i>
         </button>
       </div>
@@ -923,14 +974,14 @@ function closeTab(tabId: string) {
   } else {
     renderTabs();
     updateActiveDetails();
-    setGlobalStatus("Closed");
+    setGlobalStatus(tr("status.closed"));
   }
 }
 
 async function requestHumanControl() {
   const pane = activePane();
   if (!pane?.session?.id) {
-    setGlobalStatus("Connect a session first.", "error");
+    setGlobalStatus(tr("status.connectSessionFirst"), "error");
     return;
   }
   try {
@@ -941,9 +992,9 @@ async function requestHumanControl() {
       reason: "manual operation",
     });
     pane.controlState = `${response.lease?.actorKind ?? "human"} active`;
-    setPaneStatus(pane, "Human control lease active", "ok");
+    setPaneStatus(pane, tr("status.humanControlActive"), "ok");
   } catch (error) {
-    setPaneStatus(pane, `Control request failed: ${errorMessage(error)}`, "error");
+    setPaneStatus(pane, tr("status.controlFailed", { message: errorMessage(error) }), "error");
   }
 }
 
@@ -958,10 +1009,10 @@ function updateActiveDetails() {
   const pane = activePane(tab);
   if (!tab || !pane) {
     elements.emptyState.hidden = false;
-    elements.targetLabel.textContent = selectedSelector ? selectorLabel(selectedSelector) : "Instance";
+    elements.targetLabel.textContent = selectedSelector ? selectorLabel(selectedSelector) : tr("status.instance");
     elements.instanceStatusDot.dataset.status = selectedInstance()?.status ?? "unknown";
-    setGlobalStatus("Idle");
-    document.title = "Pure Terminal";
+    setGlobalStatus(tr("status.idle"));
+    document.title = tr("app.title");
     return;
   }
 
@@ -969,7 +1020,7 @@ function updateActiveDetails() {
   elements.targetLabel.textContent = selectorLabel(tab.selector);
   elements.instanceStatusDot.dataset.status = instanceForSelector(tab.selector)?.status ?? "running";
   setGlobalStatus(pane.status, pane.tone);
-  document.title = `${tabCurrentTitle(tab)} - Pure Terminal`;
+  document.title = `${tabCurrentTitle(tab)} - ${tr("app.title")}`;
 }
 
 function setPaneStatus(pane: TerminalPane, message: string, tone: Tone = "neutral") {
@@ -1031,7 +1082,7 @@ function scheduleCopySelection() {
 async function copySelection(report: boolean): Promise<boolean> {
   const text = window.getSelection()?.toString() ?? "";
   if (!text) {
-    if (report) setGlobalStatus("No selection to copy");
+    if (report) setGlobalStatus(tr("status.noSelection"));
     return false;
   }
 
@@ -1041,10 +1092,10 @@ async function copySelection(report: boolean): Promise<boolean> {
     } else {
       fallbackCopyText(text);
     }
-    if (report) setGlobalStatus("Selection copied", "ok");
+    if (report) setGlobalStatus(tr("status.selectionCopied"), "ok");
     return true;
   } catch (error) {
-    if (report) setGlobalStatus(`Copy failed: ${errorMessage(error)}`, "error");
+    if (report) setGlobalStatus(tr("status.copyFailed", { message: errorMessage(error) }), "error");
     return false;
   }
 }
@@ -1070,10 +1121,6 @@ function tabCurrentTitle(tab: TerminalTab): string {
   return activePane(tab)?.title || tab.label;
 }
 
-function selectorLabel(selector: string): string {
-  return selector.split("@")[0] || selector;
-}
-
 function selectedInstance(): Instance | undefined {
   return instances.find((instance) => instance.selector === selectedSelector);
 }
@@ -1082,28 +1129,6 @@ function instanceForSelector(selector: string): Instance | undefined {
   return instances.find((instance) => instance.selector === selector);
 }
 
-function newId(): string {
-  return globalThis.crypto?.randomUUID?.() ?? `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
-}
-
 function updateIcons() {
   createIcons({ icons });
-}
-
-function errorMessage(error: unknown): string {
-  return error instanceof Error ? error.message : String(error);
-}
-
-function escapeHtml(value: string): string {
-  return value.replace(/[&<>"']/g, (char) => ({
-    "&": "&amp;",
-    "<": "&lt;",
-    ">": "&gt;",
-    '"': "&quot;",
-    "'": "&#039;",
-  })[char] ?? char);
-}
-
-function escapeAttr(value: string): string {
-  return escapeHtml(value);
 }

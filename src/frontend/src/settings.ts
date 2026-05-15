@@ -16,6 +16,7 @@ export function loadSettings(): Settings {
 
 export function normalizeSettings(value: Partial<Settings>): Settings {
   return {
+    locale: value.locale === "en" || value.locale === "zh-CN" ? value.locale : DEFAULT_SETTINGS.locale,
     themeId: typeof value.themeId === "string" ? value.themeId : DEFAULT_SETTINGS.themeId,
     fontFamilyId: typeof value.fontFamilyId === "string" ? value.fontFamilyId : DEFAULT_SETTINGS.fontFamilyId,
     fontSize: clampNumber(value.fontSize, 11, 22, DEFAULT_SETTINGS.fontSize),

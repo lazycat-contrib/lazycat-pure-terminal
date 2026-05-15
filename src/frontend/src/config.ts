@@ -72,6 +72,7 @@ export const FONT_PRESETS: FontPreset[] = [
 ];
 
 export const DEFAULT_SETTINGS: Settings = {
+  locale: "auto",
   themeId: "catppuccin-mocha",
   fontFamilyId: "system-mono",
   tabLayout: "horizontal",

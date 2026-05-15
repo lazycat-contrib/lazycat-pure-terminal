@@ -168,8 +168,9 @@ input:focus-visible {
 }
 
 .tab.named {
-  width: auto;
-  max-width: 228px;
+  width: min(260px, 28vw);
+  min-width: 108px;
+  max-width: 260px;
 }
 
 .webshell[data-tab-layout="vertical"] .tab {
@@ -231,9 +232,9 @@ input:focus-visible {
 
 .tab.named .tab-main {
   justify-content: flex-start;
-  width: auto;
+  width: 100%;
   min-width: 68px;
-  max-width: 228px;
+  max-width: 260px;
 }
 
 .webshell[data-tab-layout="vertical"].has-named-tabs .tab-main {
@@ -265,7 +266,7 @@ input:focus-visible {
 
 .tab-title {
   min-width: 0;
-  max-width: 176px;
+  max-width: clamp(72px, 18vw, 206px);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -654,6 +655,20 @@ input:focus-visible {
 
 .terminal-mount:first-child {
   border-top: 0;
+}
+
+.tab-mount[data-split-axis="columns"] {
+  overflow-x: auto;
+  overflow-y: hidden;
+}
+
+.tab-mount[data-split-axis="columns"] .terminal-mount {
+  border-top: 0;
+  border-left: 1px solid rgba(148, 163, 184, 0.14);
+}
+
+.tab-mount[data-split-axis="columns"] .terminal-mount:first-child {
+  border-left: 0;
 }
 
 .terminal-mount.wterm {
@@ -1170,6 +1185,7 @@ output {
   }
 
   .tab.named {
+    width: min(172px, 46vw);
     max-width: 172px;
   }
 
