@@ -1,5 +1,5 @@
 package: community.lazycat.webshell.pure-terminal
-version: 0.1.8
+version: 0.1.9
 name: Pure Terminal
 description: LightOS WebShell provider backed by Rust, WebSocket terminal I/O, and Connect control APIs
 min_os_version: v1.5.2

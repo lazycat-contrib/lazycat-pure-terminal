@@ -1,22 +1,22 @@
-use std::io::{Read, Write};
-use std::sync::{Arc, Mutex};
-use std::thread;
+use std::sync::Arc;
 
-use anyhow::{Context as AnyhowContext, anyhow};
+use anyhow::anyhow;
 use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
 use axum::extract::{Query, State};
 use axum::http::header::{HOST, ORIGIN};
 use axum::http::{HeaderMap, StatusCode, Uri};
 use axum::response::{IntoResponse, Response};
 use futures::{SinkExt, StreamExt};
-use portable_pty::{CommandBuilder, MasterPty, NativePtySystem, PtySize, PtySystem};
 use serde::{Deserialize, Serialize};
-use tokio::sync::mpsc;
-use tracing::{debug, warn};
+use tokio::sync::broadcast;
+use tracing::warn;
 use uuid::Uuid;
 
-use crate::config::{DEFAULT_COLS, DEFAULT_ROWS, LIGHTOSCTL};
-use crate::state::{AppState, mark_session_status};
+use crate::config::{DEFAULT_COLS, DEFAULT_ROWS};
+use crate::state::{
+    AppState, bool_flag, default_session_command, host_from_selector, mark_session_status,
+};
+use crate::terminal_manager::{ManagedTerminal, TerminalEvent, TerminalSpec};
 use crate::validation::{validate_selector, validate_size};
 
 #[derive(Debug, Deserialize)]
@@ -25,6 +25,8 @@ pub struct TerminalQuery {
     name: Option<String>,
     cols: Option<u16>,
     rows: Option<u16>,
+    restart: Option<String>,
+    replay: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -32,6 +34,7 @@ pub struct TerminalQuery {
 enum TerminalClientMessage {
     Input { data: String },
     Resize { cols: u16, rows: u16 },
+    RestartPolicy { enabled: bool },
     Close,
 }
 
@@ -53,33 +56,11 @@ enum TerminalServerMessage<'a> {
     },
 }
 
-enum PtyEvent {
-    Output(Vec<u8>),
-    Exit {
-        exit_code: i32,
-        message: Option<String>,
-    },
-    Error(String),
+struct TerminalAttachTarget {
+    spec: TerminalSpec,
+    allow_spawn: bool,
+    replay: bool,
 }
-
-enum WriterCommand {
-    Input(Vec<u8>),
-    Close,
-}
-
-struct TerminalTarget {
-    session_id: String,
-    selector: String,
-    cols: u16,
-    rows: u16,
-}
-
-type SpawnedTerminal = (
-    Box<dyn MasterPty + Send>,
-    std::sync::mpsc::Sender<WriterCommand>,
-    mpsc::UnboundedReceiver<PtyEvent>,
-    Box<dyn portable_pty::ChildKiller + Send + Sync>,
-);
 
 pub async fn terminal_ws(
     State(state): State<Arc<AppState>>,
@@ -103,49 +84,75 @@ async fn handle_terminal_socket(
     state: Arc<AppState>,
     query: TerminalQuery,
 ) -> anyhow::Result<()> {
-    let terminal = resolve_terminal_target(&state, &query)?;
-    let (master, writer_tx, mut event_rx, killer) = spawn_terminal(&terminal)?;
-    let master = Arc::new(Mutex::new(master));
+    let target = resolve_terminal_target(&state, &query)?;
+    let ready_cols = target.spec.cols;
+    let ready_rows = target.spec.rows;
+    let terminal = state.terminals.open(target.spec, target.allow_spawn)?;
+    mark_session_status(&state, terminal.session_id(), "running");
 
     let (mut sender, mut receiver) = socket.split();
     send_control(
         &mut sender,
         &TerminalServerMessage::Ready {
-            session_id: &terminal.session_id,
-            selector: &terminal.selector,
-            cols: terminal.cols,
-            rows: terminal.rows,
+            session_id: terminal.session_id(),
+            selector: terminal.selector(),
+            cols: ready_cols,
+            rows: ready_rows,
         },
     )
     .await?;
 
-    let mut killer = Some(killer);
+    if target.replay {
+        let (frames, _) = terminal.replay_snapshot();
+        for frame in frames {
+            if sender
+                .send(Message::Binary(frame.data.into()))
+                .await
+                .is_err()
+            {
+                return Ok(());
+            }
+        }
+    }
+
+    let mut event_rx = terminal.subscribe();
     loop {
         tokio::select! {
-            Some(event) = event_rx.recv() => {
+            event = event_rx.recv() => {
                 match event {
-                    PtyEvent::Output(data) => {
-                        if sender.send(Message::Binary(data.into())).await.is_err() {
+                    Ok(TerminalEvent::Output(frame)) => {
+                        if sender.send(Message::Binary(frame.data.into())).await.is_err() {
                             break;
                         }
                     }
-                    PtyEvent::Exit { exit_code, message } => {
-                        send_control(&mut sender, &TerminalServerMessage::ProcessExit { exit_code, message }).await?;
+                    Ok(TerminalEvent::Exit(info)) => {
+                        mark_session_status(&state, terminal.session_id(), "exited");
+                        state.terminals.forget(terminal.session_id());
+                        send_control(
+                            &mut sender,
+                            &TerminalServerMessage::ProcessExit {
+                                exit_code: info.exit_code,
+                                message: info.message,
+                            },
+                        )
+                        .await?;
                         break;
                     }
-                    PtyEvent::Error(message) => {
+                    Ok(TerminalEvent::Error(message)) => {
                         send_control(&mut sender, &TerminalServerMessage::Error { message }).await?;
                         break;
                     }
+                    Err(broadcast::error::RecvError::Lagged(_)) => {}
+                    Err(broadcast::error::RecvError::Closed) => break,
                 }
             }
             Some(message) = receiver.next() => {
                 match message? {
                     Message::Binary(data) => {
-                        let _ = writer_tx.send(WriterCommand::Input(data.to_vec()));
+                        terminal.write_input(data.to_vec());
                     }
                     Message::Text(text) => {
-                        if !handle_terminal_control_message(&text, &master)? {
+                        if !handle_terminal_control_message(&state, &text, &terminal)? {
                             break;
                         }
                     }
@@ -160,23 +167,17 @@ async fn handle_terminal_socket(
         }
     }
 
-    let _ = writer_tx.send(WriterCommand::Close);
-    if let Some(mut child_killer) = killer.take()
-        && let Err(err) = child_killer.kill()
-    {
-        debug!(error = %err, "terminal child was already closed");
-    }
-    mark_session_status(&state, &terminal.session_id, "closed");
     Ok(())
 }
 
 fn handle_terminal_control_message(
+    state: &AppState,
     text: &str,
-    master: &Arc<Mutex<Box<dyn MasterPty + Send>>>,
+    terminal: &ManagedTerminal,
 ) -> anyhow::Result<bool> {
     if let Some(rest) = text.strip_prefix("resize:") {
         let (cols, rows) = parse_resize_payload(rest)?;
-        resize_pty(master, cols, rows)?;
+        terminal.resize(cols, rows)?;
         return Ok(true);
     }
 
@@ -189,7 +190,11 @@ fn handle_terminal_control_message(
             Ok(true)
         }
         Ok(TerminalClientMessage::Resize { cols, rows }) => {
-            resize_pty(master, cols, rows)?;
+            terminal.resize(cols, rows)?;
+            Ok(true)
+        }
+        Ok(TerminalClientMessage::RestartPolicy { enabled }) => {
+            set_session_restartable(state, terminal.session_id(), enabled)?;
             Ok(true)
         }
         Ok(TerminalClientMessage::Close) => Ok(false),
@@ -210,22 +215,6 @@ fn parse_resize_payload(rest: &str) -> anyhow::Result<(u16, u16)> {
     Ok((cols, rows))
 }
 
-fn resize_pty(
-    master: &Arc<Mutex<Box<dyn MasterPty + Send>>>,
-    cols: u16,
-    rows: u16,
-) -> anyhow::Result<()> {
-    validate_size(cols, rows)?;
-    let master = master.lock().map_err(|_| anyhow!("pty lock poisoned"))?;
-    master.resize(PtySize {
-        rows,
-        cols,
-        pixel_width: 0,
-        pixel_height: 0,
-    })?;
-    Ok(())
-}
-
 async fn send_control(
     sender: &mut futures::stream::SplitSink<WebSocket, Message>,
     message: &TerminalServerMessage<'_>,
@@ -238,28 +227,44 @@ async fn send_control(
 fn resolve_terminal_target(
     state: &AppState,
     query: &TerminalQuery,
-) -> anyhow::Result<TerminalTarget> {
+) -> anyhow::Result<TerminalAttachTarget> {
+    let restart = parse_query_bool(query.restart.as_deref(), "restart")?;
+    let replay = parse_query_bool(query.replay.as_deref(), "replay")?.unwrap_or(true);
     if let Some(session_id) = query
         .session_id
         .as_deref()
         .map(str::trim)
         .filter(|v| !v.is_empty())
     {
-        let sessions = state
-            .sessions
-            .read()
-            .map_err(|_| anyhow!("session store lock poisoned"))?;
-        let session = sessions
-            .get(session_id)
-            .ok_or_else(|| anyhow!("unknown session id"))?;
-        let cols = query.cols.unwrap_or(session.cols);
-        let rows = query.rows.unwrap_or(session.rows);
-        validate_size(cols, rows)?;
-        return Ok(TerminalTarget {
-            session_id: session.id.clone(),
-            selector: session.selector.clone(),
-            cols,
-            rows,
+        let mut snapshot = None;
+        let (spec, status) = {
+            let mut sessions = state
+                .sessions
+                .write()
+                .map_err(|_| anyhow!("session store lock poisoned"))?;
+            let session = sessions
+                .get_mut(session_id)
+                .ok_or_else(|| anyhow!("unknown session id"))?;
+            let cols = query.cols.unwrap_or(session.cols);
+            let rows = query.rows.unwrap_or(session.rows);
+            validate_size(cols, rows)?;
+            if let Some(restartable) = restart {
+                session.set_restartable(restartable);
+            }
+            let spec = session.terminal_spec(cols, rows);
+            let status = session.status.clone();
+            if restart.is_some() {
+                snapshot = Some(sessions.clone());
+            }
+            (spec, status)
+        };
+        if let Some(snapshot) = snapshot {
+            state.persist_sessions_snapshot(&snapshot)?;
+        }
+        return Ok(TerminalAttachTarget {
+            spec,
+            allow_spawn: restart.unwrap_or(false) || status == "running",
+            replay,
         });
     }
 
@@ -273,101 +278,47 @@ fn resolve_terminal_target(
     let cols = query.cols.unwrap_or(DEFAULT_COLS);
     let rows = query.rows.unwrap_or(DEFAULT_ROWS);
     validate_size(cols, rows)?;
-    Ok(TerminalTarget {
-        session_id: Uuid::new_v4().to_string(),
-        selector: selector.to_owned(),
-        cols,
-        rows,
+    let host = host_from_selector(selector);
+    let (command, args) = default_session_command(selector);
+    Ok(TerminalAttachTarget {
+        spec: TerminalSpec {
+            session_id: Uuid::new_v4().to_string(),
+            host,
+            selector: selector.to_owned(),
+            command,
+            args,
+            cols,
+            rows,
+        },
+        allow_spawn: true,
+        replay,
     })
 }
 
-fn spawn_terminal(target: &TerminalTarget) -> anyhow::Result<SpawnedTerminal> {
-    let pty_system = NativePtySystem::default();
-    let pair = pty_system.openpty(PtySize {
-        rows: target.rows,
-        cols: target.cols,
-        pixel_width: 0,
-        pixel_height: 0,
-    })?;
-
-    let mut command = CommandBuilder::new(LIGHTOSCTL);
-    command.arg("exec");
-    command.arg("-ti");
-    command.arg(&target.selector);
-    command.arg("/bin/sh");
-    command.arg("-lc");
-    command.arg(shell_bootstrap_script());
-    command.env("TERM", "xterm-256color");
-
-    let mut child = pair
-        .slave
-        .spawn_command(command)
-        .with_context(|| format!("failed to start {LIGHTOSCTL} exec"))?;
-    let killer = child.clone_killer();
-    drop(pair.slave);
-
-    let mut reader = pair.master.try_clone_reader()?;
-    let mut writer = pair.master.take_writer()?;
-    let (writer_tx, writer_rx) = std::sync::mpsc::channel::<WriterCommand>();
-    let (event_tx, event_rx) = mpsc::unbounded_channel::<PtyEvent>();
-
-    let output_tx = event_tx.clone();
-    thread::spawn(move || {
-        let mut buf = [0_u8; 8192];
-        loop {
-            match reader.read(&mut buf) {
-                Ok(0) => break,
-                Ok(n) => {
-                    if output_tx.send(PtyEvent::Output(buf[..n].to_vec())).is_err() {
-                        break;
-                    }
-                }
-                Err(err) => {
-                    let _ = output_tx.send(PtyEvent::Error(err.to_string()));
-                    break;
-                }
-            }
-        }
-    });
-
-    thread::spawn(move || {
-        for command in writer_rx {
-            match command {
-                WriterCommand::Input(data) => {
-                    if let Err(err) = writer.write_all(&data) {
-                        warn!(error = %err, "failed to write terminal input");
-                        break;
-                    }
-                    if let Err(err) = writer.flush() {
-                        warn!(error = %err, "failed to flush terminal input");
-                        break;
-                    }
-                }
-                WriterCommand::Close => break,
-            }
-        }
-    });
-
-    thread::spawn(move || {
-        let result = child.wait();
-        let event = match result {
-            Ok(status) => PtyEvent::Exit {
-                exit_code: i32::try_from(status.exit_code()).unwrap_or(i32::MAX),
-                message: status.signal().map(ToOwned::to_owned),
-            },
-            Err(err) => PtyEvent::Exit {
-                exit_code: -1,
-                message: Some(err.to_string()),
-            },
-        };
-        let _ = event_tx.send(event);
-    });
-
-    Ok((pair.master, writer_tx, event_rx, killer))
+fn set_session_restartable(
+    state: &AppState,
+    session_id: &str,
+    restartable: bool,
+) -> anyhow::Result<()> {
+    let snapshot = {
+        let mut sessions = state
+            .sessions
+            .write()
+            .map_err(|_| anyhow!("session store lock poisoned"))?;
+        let session = sessions
+            .get_mut(session_id)
+            .ok_or_else(|| anyhow!("unknown session id"))?;
+        session.set_restartable(restartable);
+        sessions.clone()
+    };
+    state.persist_sessions_snapshot(&snapshot)?;
+    Ok(())
 }
 
-fn shell_bootstrap_script() -> &'static str {
-    "if [ -f /run/catlink/shell-env.sh ]; then . /run/catlink/shell-env.sh; fi\nexec \"${SHELL:-/bin/sh}\""
+fn parse_query_bool(value: Option<&str>, name: &str) -> anyhow::Result<Option<bool>> {
+    value
+        .map(|value| bool_flag(value).ok_or_else(|| anyhow!("{name} must be a boolean")))
+        .transpose()
 }
 
 fn origin_allowed(headers: &HeaderMap) -> bool {

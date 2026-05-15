@@ -7,3 +7,5 @@ pub const MAX_COLS: u16 = 500;
 pub const MAX_ROWS: u16 = 200;
 pub const MAX_FONT_BYTES: usize = 10 * 1024 * 1024;
 pub const DEFAULT_FONT_DIR: &str = "/lzcapp/var/fonts";
+pub const DEFAULT_SESSION_STATE_FILE: &str = "/lzcapp/var/sessions.json";
+pub const SHELL_BOOTSTRAP_SCRIPT: &str = "if [ -f /run/catlink/shell-env.sh ]; then . /run/catlink/shell-env.sh; fi\nexec \"${SHELL:-/bin/sh}\"";

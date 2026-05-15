@@ -16,7 +16,10 @@ use crate::proto::lazycat::webshell::v1::{
     OwnedListSessionsRequestView, OwnedReleaseControlRequestView, OwnedRequestControlRequestView,
     ProviderDescriptor, ReleaseControlResponse, RequestControlResponse,
 };
-use crate::state::{AppState, PluginRecord, SessionRecord};
+use crate::state::{
+    AppState, PluginRecord, SessionRecord, bool_flag, default_session_command, host_from_selector,
+    session_id_for_host,
+};
 use crate::validation::{normalize_dimension, required_field, validate_selector};
 
 pub struct CapabilityServiceImpl {
@@ -84,22 +87,46 @@ impl CapabilityService for CapabilityServiceImpl {
         validate_selector(selector)?;
         let cols = normalize_dimension(request.cols, DEFAULT_COLS, MAX_COLS, "cols")?;
         let rows = normalize_dimension(request.rows, DEFAULT_ROWS, MAX_ROWS, "rows")?;
-        let id = Uuid::new_v4().to_string();
+        let host = host_from_selector(selector);
+        let id = session_id_for_host(&host);
+        let (command, args) = default_session_command(selector);
+        let mut metadata: HashMap<String, String> = request
+            .metadata
+            .iter()
+            .map(|entry| (entry.0.to_owned(), entry.1.to_owned()))
+            .collect();
+        let restartable = metadata
+            .get("autoRestart")
+            .or_else(|| metadata.get("restartable"))
+            .and_then(|value| bool_flag(value))
+            .unwrap_or(false);
+        metadata.insert("host".to_owned(), host.clone());
+        metadata.insert("restartable".to_owned(), restartable.to_string());
         let record = SessionRecord {
             id: id.clone(),
+            host,
             selector: selector.to_owned(),
-            status: "ready".to_owned(),
+            status: "running".to_owned(),
             cols,
             rows,
+            command,
+            args,
             control: None,
-            metadata: request
-                .metadata
-                .iter()
-                .map(|entry| (entry.0.to_owned(), entry.1.to_owned()))
-                .collect(),
+            metadata,
         };
+        self.state
+            .terminals
+            .open(record.terminal_spec(cols, rows), true)
+            .map_err(|err| ConnectError::internal(err.to_string()))?;
         let session = record.to_proto();
-        self.sessions_write()?.insert(id, record);
+        let snapshot = {
+            let mut sessions = self.sessions_write()?;
+            sessions.insert(id, record);
+            sessions.clone()
+        };
+        self.state
+            .persist_sessions_snapshot(&snapshot)
+            .map_err(|err| ConnectError::internal(err.to_string()))?;
         ConnectResponse::ok(CreateSessionResponse {
             session: MessageField::some(session),
             ..Default::default()
@@ -112,14 +139,21 @@ impl CapabilityService for CapabilityServiceImpl {
         request: OwnedCloseSessionRequestView,
     ) -> ServiceResult<CloseSessionResponse> {
         let session_id = required_field(request.session_id, "session_id")?;
-        let mut sessions = self.sessions_write()?;
-        let Some(record) = sessions.get_mut(session_id) else {
-            return Err(ConnectError::not_found("session not found"));
+        self.state.terminals.close(session_id);
+        let (status, snapshot) = {
+            let mut sessions = self.sessions_write()?;
+            let Some(mut record) = sessions.remove(session_id) else {
+                return Err(ConnectError::not_found("session not found"));
+            };
+            "closed".clone_into(&mut record.status);
+            (record.status.clone(), sessions.clone())
         };
-        "closed".clone_into(&mut record.status);
+        self.state
+            .persist_sessions_snapshot(&snapshot)
+            .map_err(|err| ConnectError::internal(err.to_string()))?;
         ConnectResponse::ok(CloseSessionResponse {
             session_id: Some(session_id.to_owned()),
-            status: Some(record.status.clone()),
+            status: Some(status),
             ..Default::default()
         })
     }
@@ -248,11 +282,17 @@ impl CapabilityService for CapabilityServiceImpl {
             status: Some("active".to_owned()),
             ..Default::default()
         };
-        let mut sessions = self.sessions_write()?;
-        let Some(session) = sessions.get_mut(session_id) else {
-            return Err(ConnectError::not_found("session not found"));
+        let snapshot = {
+            let mut sessions = self.sessions_write()?;
+            let Some(session) = sessions.get_mut(session_id) else {
+                return Err(ConnectError::not_found("session not found"));
+            };
+            session.control = Some(lease.clone());
+            sessions.clone()
         };
-        session.control = Some(lease.clone());
+        self.state
+            .persist_sessions_snapshot(&snapshot)
+            .map_err(|err| ConnectError::internal(err.to_string()))?;
         ConnectResponse::ok(RequestControlResponse {
             lease: MessageField::some(lease),
             ..Default::default()
@@ -266,20 +306,26 @@ impl CapabilityService for CapabilityServiceImpl {
     ) -> ServiceResult<ReleaseControlResponse> {
         let session_id = required_field(request.session_id, "session_id")?;
         let lease_id = required_field(request.lease_id, "lease_id")?;
-        let mut sessions = self.sessions_write()?;
-        let Some(session) = sessions.get_mut(session_id) else {
-            return Err(ConnectError::not_found("session not found"));
+        let snapshot = {
+            let mut sessions = self.sessions_write()?;
+            let Some(session) = sessions.get_mut(session_id) else {
+                return Err(ConnectError::not_found("session not found"));
+            };
+            let current = session
+                .control
+                .as_ref()
+                .and_then(|lease| lease.lease_id.as_deref());
+            if current != Some(lease_id) {
+                return Err(ConnectError::failed_precondition(
+                    "lease_id does not match active control lease",
+                ));
+            }
+            session.control = None;
+            sessions.clone()
         };
-        let current = session
-            .control
-            .as_ref()
-            .and_then(|lease| lease.lease_id.as_deref());
-        if current != Some(lease_id) {
-            return Err(ConnectError::failed_precondition(
-                "lease_id does not match active control lease",
-            ));
-        }
-        session.control = None;
+        self.state
+            .persist_sessions_snapshot(&snapshot)
+            .map_err(|err| ConnectError::internal(err.to_string()))?;
         ConnectResponse::ok(ReleaseControlResponse {
             session_id: Some(session_id.to_owned()),
             status: Some("released".to_owned()),

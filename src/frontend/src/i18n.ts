@@ -41,6 +41,7 @@ export type MessageKey =
   | "menu.instances"
   | "menu.pane"
   | "section.appearance"
+  | "setting.autoRestartSessions"
   | "setting.copyOnSelect"
   | "setting.cursorBlink"
   | "setting.debugAdapter"
@@ -74,6 +75,7 @@ export type MessageKey =
   | "status.shellReady"
   | "status.socketError"
   | "status.startupFailed"
+  | "status.sessionStopped"
   | "status.terminalError"
   | "validation.fontExtension"
   | "validation.fontMime"
@@ -119,6 +121,7 @@ const messages: Record<Language, Record<MessageKey, string>> = {
     "menu.instances": "Instances",
     "menu.pane": "Pane menu",
     "section.appearance": "Appearance",
+    "setting.autoRestartSessions": "Restart sessions after provider restart",
     "setting.copyOnSelect": "Copy on select",
     "setting.cursorBlink": "Cursor blink",
     "setting.debugAdapter": "Debug adapter",
@@ -152,6 +155,7 @@ const messages: Record<Language, Record<MessageKey, string>> = {
     "status.shellReady": "Shell ready",
     "status.socketError": "Socket error",
     "status.startupFailed": "Startup failed: {message}",
+    "status.sessionStopped": "Session stopped",
     "status.terminalError": "Terminal error",
     "validation.fontExtension": "only .woff, .woff2, .ttf, and .otf are allowed",
     "validation.fontMime": "unsupported font MIME type: {mimeType}",
@@ -196,6 +200,7 @@ const messages: Record<Language, Record<MessageKey, string>> = {
     "menu.instances": "实例",
     "menu.pane": "终端面板菜单",
     "section.appearance": "外观",
+    "setting.autoRestartSessions": "Provider 重启后自动恢复会话",
     "setting.copyOnSelect": "选中即复制",
     "setting.cursorBlink": "光标闪烁",
     "setting.debugAdapter": "调试适配器",
@@ -229,6 +234,7 @@ const messages: Record<Language, Record<MessageKey, string>> = {
     "status.shellReady": "Shell 已就绪",
     "status.socketError": "Socket 错误",
     "status.startupFailed": "启动失败：{message}",
+    "status.sessionStopped": "会话已停止",
     "status.terminalError": "终端错误",
     "validation.fontExtension": "只允许 .woff、.woff2、.ttf 和 .otf",
     "validation.fontMime": "不支持的字体 MIME 类型：{mimeType}",

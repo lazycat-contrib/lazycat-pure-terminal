@@ -15,6 +15,7 @@ mod router;
 mod service;
 mod state;
 mod terminal;
+mod terminal_manager;
 mod validation;
 
 use crate::router::build_app;

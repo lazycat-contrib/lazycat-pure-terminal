@@ -82,6 +82,7 @@ export const DEFAULT_SETTINGS: Settings = {
   cursorShape: "block",
   copyOnSelect: false,
   scrollbackLimit: 10000,
+  autoRestartSessions: false,
   debugMode: false,
   aiProvider: "openai-compatible",
   aiBaseUrl: "",

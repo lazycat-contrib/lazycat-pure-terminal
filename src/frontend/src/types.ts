@@ -56,6 +56,7 @@ export type Settings = {
   cursorShape: CursorShape;
   copyOnSelect: boolean;
   scrollbackLimit: number;
+  autoRestartSessions: boolean;
   debugMode: boolean;
   aiProvider: string;
   aiBaseUrl: string;
@@ -77,6 +78,8 @@ export type TerminalPane = {
   socket?: WebSocket;
   reconnectTimer?: number;
   reconnectDelay: number;
+  connectedOnce: boolean;
+  exited: boolean;
   closing: boolean;
   cols: number;
   rows: number;

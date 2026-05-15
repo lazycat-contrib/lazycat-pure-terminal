@@ -33,6 +33,7 @@ export type ShellElements = {
   cursorBlink: HTMLInputElement;
   cursorShape: HTMLSelectElement;
   copyOnSelect: HTMLInputElement;
+  autoRestartSessions: HTMLInputElement;
   debugMode: HTMLInputElement;
   paneMenu: HTMLDivElement;
   fitTerminal: HTMLButtonElement;
@@ -163,6 +164,10 @@ export function renderShell(app: HTMLElement): ShellElements {
               <span data-i18n="setting.copyOnSelect">Copy on select</span>
             </label>
             <label class="switch">
+              <input id="autoRestartSessions" type="checkbox" />
+              <span data-i18n="setting.autoRestartSessions">Restart sessions after provider restart</span>
+            </label>
+            <label class="switch">
               <input id="debugMode" type="checkbox" />
               <span data-i18n="setting.debugAdapter">Debug adapter</span>
             </label>
@@ -228,6 +233,7 @@ export function renderShell(app: HTMLElement): ShellElements {
     cursorBlink: qs<HTMLInputElement>("#cursorBlink"),
     cursorShape: qs<HTMLSelectElement>("#cursorShape"),
     copyOnSelect: qs<HTMLInputElement>("#copyOnSelect"),
+    autoRestartSessions: qs<HTMLInputElement>("#autoRestartSessions"),
     debugMode: qs<HTMLInputElement>("#debugMode"),
     paneMenu: qs<HTMLDivElement>("#paneMenu"),
     fitTerminal: qs<HTMLButtonElement>("#fitTerminal"),

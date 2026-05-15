@@ -18,7 +18,7 @@ import {
   STATUS_REFRESH_MS,
   THEMES,
 } from "./config";
-import { CapabilityService, type Instance } from "./gen/lazycat/webshell/v1/capability_pb";
+import { CapabilityService, type Instance, type Session } from "./gen/lazycat/webshell/v1/capability_pb";
 import { translate, type MessageKey } from "./i18n";
 import { keyEventToTerminalSequence } from "./keyboard";
 import { loadSettings, saveSettings as persistSettings } from "./settings";
@@ -56,9 +56,12 @@ async function init() {
   createIcons({ icons });
   setInterval(updateActiveDetails, STATUS_REFRESH_MS);
   await loadInstances();
+  await restoreSessions();
   if (selectedSelector) {
     elements.targetLabel.textContent = selectorLabel(selectedSelector);
-    await createTerminalTab(selectedSelector);
+    if (!tabs.some((tab) => tab.selector === selectedSelector)) {
+      await createTerminalTab(selectedSelector);
+    }
   }
 }
 
@@ -160,6 +163,14 @@ function bindSettings() {
   elements.copyOnSelect.addEventListener("change", () => {
     settings.copyOnSelect = elements.copyOnSelect.checked;
     saveSettings();
+  });
+  elements.autoRestartSessions.addEventListener("change", () => {
+    settings.autoRestartSessions = elements.autoRestartSessions.checked;
+    saveSettings();
+    syncRestartPolicyToServer();
+    if (settings.autoRestartSessions) {
+      void connectRestoredPanes();
+    }
   });
   elements.debugMode.addEventListener("change", () => {
     settings.debugMode = elements.debugMode.checked;
@@ -342,6 +353,7 @@ function applySettings(options: { resizeTerminals?: boolean } = {}) {
   elements.cursorBlink.checked = settings.cursorBlink;
   elements.cursorShape.value = settings.cursorShape;
   elements.copyOnSelect.checked = settings.copyOnSelect;
+  elements.autoRestartSessions.checked = settings.autoRestartSessions;
   elements.debugMode.checked = settings.debugMode;
 
   for (const pane of allPanes()) {
@@ -565,6 +577,92 @@ function renderInstances() {
   });
 }
 
+async function restoreSessions() {
+  try {
+    const response = await client.listSessions({});
+    let sessions = response.sessions
+      .filter((session) => session.id && session.selector && session.status !== "closed")
+      .sort((left, right) => sessionHost(left).localeCompare(sessionHost(right)) || left.id.localeCompare(right.id));
+    if (!settings.autoRestartSessions) {
+      await cleanupStoppedSessions(sessions);
+      sessions = sessions.filter((session) => session.status === "running");
+    }
+    if (!sessions.length) return;
+
+    const byHost = new Map<string, Session[]>();
+    for (const session of sessions) {
+      const host = sessionHost(session);
+      byHost.set(host, [...(byHost.get(host) ?? []), session]);
+    }
+
+    for (const [host, hostSessions] of byHost) {
+      const selector = hostSessions[0]?.selector;
+      if (!selector) continue;
+      const tab = makeTab(selector);
+      tab.customTitle = host;
+      tabs = [...tabs, tab];
+      elements.terminalStage.appendChild(tab.mount);
+      for (const session of hostSessions) {
+        await restorePane(tab, session);
+      }
+      if (!activeTabId) {
+        activateTab(tab.id);
+      }
+    }
+    renderTabs();
+    updateActiveDetails();
+  } catch (error) {
+    setGlobalStatus(tr("status.connectFailed", { message: errorMessage(error) }), "error");
+  }
+}
+
+async function restorePane(tab: TerminalTab, session: Session) {
+  const pane = makePane(tab);
+  pane.session = session;
+  pane.cols = session.cols || INITIAL_COLS;
+  pane.rows = session.rows || INITIAL_ROWS;
+  const referencePane = activePane(tab);
+  tab.panes.push(pane);
+  tab.layout = nextPaneLayout(tab.layout, referencePane?.id, pane.id, "down");
+  tab.activePaneId ??= pane.id;
+  renderPaneLayout(tab);
+  setPaneStatus(pane, tr("status.loadingGhostty"));
+  await mountTerminal(pane);
+  if (shouldConnectRestoredSession(session)) {
+    openSocket(pane);
+  } else {
+    setPaneStatus(pane, tr("status.sessionStopped"), "neutral");
+  }
+}
+
+function shouldConnectRestoredSession(session: Session): boolean {
+  return session.status === "running" || settings.autoRestartSessions;
+}
+
+async function cleanupStoppedSessions(sessions: Session[]) {
+  await Promise.allSettled(
+    sessions
+      .filter((session) => session.id && session.status !== "running")
+      .map((session) => client.closeSession({ sessionId: session.id })),
+  );
+}
+
+async function connectRestoredPanes() {
+  for (const pane of allPanes()) {
+    if (pane.closing || pane.exited || !pane.session?.id) continue;
+    if (pane.socket?.readyState === WebSocket.OPEN || pane.socket?.readyState === WebSocket.CONNECTING) continue;
+    setPaneStatus(pane, tr("status.loadingGhostty"));
+    if (!pane.term) {
+      await mountTerminal(pane);
+    }
+    openSocket(pane);
+  }
+}
+
+function sessionHost(session: Session): string {
+  return session.metadata.host?.trim() || selectorLabel(session.selector || "");
+}
+
 async function createSelectedTab() {
   if (!selectedSelector) {
     setGlobalStatus(tr("status.selectRunningInstance"), "error");
@@ -633,6 +731,8 @@ function makePane(tab: TerminalTab): TerminalPane {
     tone: "neutral",
     mount,
     reconnectDelay: 1000,
+    connectedOnce: false,
+    exited: false,
     closing: false,
     cols: INITIAL_COLS,
     rows: INITIAL_ROWS,
@@ -654,7 +754,14 @@ async function createPane(tab: TerminalTab, placement: SplitPlacement) {
       selector: tab.selector,
       cols: INITIAL_COLS,
       rows: INITIAL_ROWS,
-      metadata: { frontend: "wterm-ghostty", tabId: tab.id, paneId: pane.id, split: placement },
+      metadata: {
+        frontend: "wterm-ghostty",
+        tabId: tab.id,
+        paneId: pane.id,
+        split: placement,
+        autoRestart: String(settings.autoRestartSessions),
+        restartable: String(settings.autoRestartSessions),
+      },
     });
     pane.session = response.session;
     setPaneStatus(pane, tr("status.loadingGhostty"));
@@ -820,11 +927,16 @@ function openSocket(pane: TerminalPane) {
   url.searchParams.set("session_id", pane.session.id);
   url.searchParams.set("cols", String(pane.term?.cols ?? INITIAL_COLS));
   url.searchParams.set("rows", String(pane.term?.rows ?? INITIAL_ROWS));
+  url.searchParams.set("restart", String(settings.autoRestartSessions));
+  url.searchParams.set("replay", String(!pane.connectedOnce));
 
+  pane.exited = false;
   pane.socket = new WebSocket(url);
   pane.socket.binaryType = "arraybuffer";
   pane.socket.addEventListener("open", () => {
     pane.reconnectDelay = 1000;
+    pane.connectedOnce = true;
+    sendRestartPolicy(pane);
     setPaneStatus(pane, tr("status.connected"), "ok");
     if (activeTabId === pane.tabId && activePane()?.id === pane.id) {
       pane.term?.focus();
@@ -833,6 +945,20 @@ function openSocket(pane: TerminalPane) {
   pane.socket.addEventListener("message", (event) => handleSocketMessage(pane, event));
   pane.socket.addEventListener("close", () => scheduleReconnect(pane));
   pane.socket.addEventListener("error", () => setPaneStatus(pane, tr("status.socketError"), "error"));
+}
+
+function syncRestartPolicyToServer() {
+  for (const pane of allPanes()) {
+    if (pane.session) {
+      pane.session.metadata.restartable = String(settings.autoRestartSessions);
+    }
+    sendRestartPolicy(pane);
+  }
+}
+
+function sendRestartPolicy(pane: TerminalPane) {
+  if (pane.socket?.readyState !== WebSocket.OPEN) return;
+  pane.socket.send(JSON.stringify({ type: "restart-policy", enabled: settings.autoRestartSessions }));
 }
 
 function handleSocketMessage(pane: TerminalPane, event: MessageEvent) {
@@ -852,14 +978,20 @@ function handleServerText(pane: TerminalPane, text: string) {
     const event = JSON.parse(text) as { type?: string; message?: string; exit_code?: number };
     if (event.type === "ready") setPaneStatus(pane, tr("status.shellReady"), "ok");
     if (event.type === "error") setPaneStatus(pane, event.message ?? tr("status.terminalError"), "error");
-    if (event.type === "process-exit") setPaneStatus(pane, tr("status.processExited", { code: event.exit_code ?? -1 }), "error");
+    if (event.type === "process-exit") {
+      pane.exited = true;
+      if (pane.session) {
+        pane.session.status = "exited";
+      }
+      setPaneStatus(pane, tr("status.processExited", { code: event.exit_code ?? -1 }), "error");
+    }
   } catch {
     pane.term?.write(text);
   }
 }
 
 function scheduleReconnect(pane: TerminalPane) {
-  if (pane.closing || !pane.session?.id) return;
+  if (pane.closing || pane.exited || !pane.session?.id) return;
   window.clearTimeout(pane.reconnectTimer);
   const delay = pane.reconnectDelay;
   pane.reconnectDelay = Math.min(pane.reconnectDelay * 2, 30000);

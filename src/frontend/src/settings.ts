@@ -27,6 +27,7 @@ export function normalizeSettings(value: Partial<Settings>): Settings {
     scrollbackLimit: Math.round(
       clampNumber(value.scrollbackLimit, 1000, 100000, DEFAULT_SETTINGS.scrollbackLimit),
     ),
+    autoRestartSessions: value.autoRestartSessions ?? DEFAULT_SETTINGS.autoRestartSessions,
     tabLayout: value.tabLayout === "vertical" ? "vertical" : DEFAULT_SETTINGS.tabLayout,
     debugMode: value.debugMode ?? DEFAULT_SETTINGS.debugMode,
     aiProvider: typeof value.aiProvider === "string" ? value.aiProvider : DEFAULT_SETTINGS.aiProvider,
