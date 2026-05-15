@@ -30,15 +30,31 @@ pub struct TerminalQuery {
     replay: Option<String>,
     tab_id: Option<String>,
     pane_id: Option<String>,
+    tab_title: Option<String>,
+    tab_order: Option<String>,
+    pane_order: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
 #[serde(tag = "type", rename_all = "kebab-case")]
 enum TerminalClientMessage {
-    Input { data: String },
-    Resize { cols: u16, rows: u16 },
-    RestartPolicy { enabled: bool },
-    SessionPlacement { tab_id: String, pane_id: String },
+    Input {
+        data: String,
+    },
+    Resize {
+        cols: u16,
+        rows: u16,
+    },
+    RestartPolicy {
+        enabled: bool,
+    },
+    SessionPlacement {
+        tab_id: String,
+        pane_id: String,
+        tab_title: Option<String>,
+        tab_order: Option<String>,
+        pane_order: Option<String>,
+    },
     Close,
 }
 
@@ -64,6 +80,15 @@ struct TerminalAttachTarget {
     spec: TerminalSpec,
     allow_spawn: bool,
     replay: bool,
+}
+
+#[derive(Clone, Copy, Default)]
+struct SessionPlacement<'a> {
+    tab_id: Option<&'a str>,
+    pane_id: Option<&'a str>,
+    tab_title: Option<&'a str>,
+    tab_order: Option<&'a str>,
+    pane_order: Option<&'a str>,
 }
 
 pub async fn terminal_ws(
@@ -201,8 +226,24 @@ fn handle_terminal_control_message(
             set_session_restartable(state, terminal.session_id(), enabled)?;
             Ok(true)
         }
-        Ok(TerminalClientMessage::SessionPlacement { tab_id, pane_id }) => {
-            set_session_placement(state, terminal.session_id(), &tab_id, &pane_id)?;
+        Ok(TerminalClientMessage::SessionPlacement {
+            tab_id,
+            pane_id,
+            tab_title,
+            tab_order,
+            pane_order,
+        }) => {
+            set_session_placement(
+                state,
+                terminal.session_id(),
+                SessionPlacement {
+                    tab_id: Some(&tab_id),
+                    pane_id: Some(&pane_id),
+                    tab_title: tab_title.as_deref(),
+                    tab_order: tab_order.as_deref(),
+                    pane_order: pane_order.as_deref(),
+                },
+            )?;
             Ok(true)
         }
         Ok(TerminalClientMessage::Close) => Ok(false),
@@ -259,15 +300,19 @@ fn resolve_terminal_target(
             if let Some(restartable) = restart {
                 session.set_restartable(restartable);
             }
-            if let Some(tab_id) = metadata_value(query.tab_id.as_deref()) {
-                session.metadata.insert("tabId".to_owned(), tab_id);
-            }
-            if let Some(pane_id) = metadata_value(query.pane_id.as_deref()) {
-                session.metadata.insert("paneId".to_owned(), pane_id);
-            }
+            let placement_changed = apply_session_placement(
+                &mut session.metadata,
+                SessionPlacement {
+                    tab_id: query.tab_id.as_deref(),
+                    pane_id: query.pane_id.as_deref(),
+                    tab_title: query.tab_title.as_deref(),
+                    tab_order: query.tab_order.as_deref(),
+                    pane_order: query.pane_order.as_deref(),
+                },
+            );
             let spec = session.terminal_spec(cols, rows);
             let status = session.status.clone();
-            if restart.is_some() || query.tab_id.is_some() || query.pane_id.is_some() {
+            if restart.is_some() || placement_changed {
                 snapshot = Some(sessions.clone());
             }
             (spec, status)
@@ -332,19 +377,8 @@ fn set_session_restartable(
 fn set_session_placement(
     state: &AppState,
     session_id: &str,
-    tab_id: &str,
-    pane_id: &str,
+    placement: SessionPlacement<'_>,
 ) -> anyhow::Result<()> {
-    let mut metadata = HashMap::new();
-    if let Some(tab_id) = metadata_value(Some(tab_id)) {
-        metadata.insert("tabId".to_owned(), tab_id);
-    }
-    if let Some(pane_id) = metadata_value(Some(pane_id)) {
-        metadata.insert("paneId".to_owned(), pane_id);
-    }
-    if metadata.is_empty() {
-        return Ok(());
-    }
     let snapshot = {
         let mut sessions = state
             .sessions
@@ -353,11 +387,63 @@ fn set_session_placement(
         let session = sessions
             .get_mut(session_id)
             .ok_or_else(|| anyhow!("unknown session id"))?;
-        session.metadata.extend(metadata);
+        if !apply_session_placement(&mut session.metadata, placement) {
+            return Ok(());
+        }
         sessions.clone()
     };
     state.persist_sessions_snapshot(&snapshot)?;
     Ok(())
+}
+
+fn apply_session_placement(
+    metadata: &mut HashMap<String, String>,
+    placement: SessionPlacement<'_>,
+) -> bool {
+    let mut changed = false;
+    changed |= set_metadata_value(metadata, "tabId", placement.tab_id);
+    changed |= set_metadata_value(metadata, "paneId", placement.pane_id);
+    changed |= set_clearable_metadata_value(metadata, "tabTitle", placement.tab_title);
+    changed |= set_metadata_value(metadata, "tabOrder", placement.tab_order);
+    changed |= set_metadata_value(metadata, "paneOrder", placement.pane_order);
+    changed
+}
+
+fn set_metadata_value(
+    metadata: &mut HashMap<String, String>,
+    key: &str,
+    value: Option<&str>,
+) -> bool {
+    let Some(value) = metadata_value(value) else {
+        return false;
+    };
+    if metadata.get(key).is_some_and(|existing| existing == &value) {
+        return false;
+    }
+    metadata.insert(key.to_owned(), value);
+    true
+}
+
+fn set_clearable_metadata_value(
+    metadata: &mut HashMap<String, String>,
+    key: &str,
+    value: Option<&str>,
+) -> bool {
+    let Some(raw) = value else {
+        return false;
+    };
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return metadata.remove(key).is_some();
+    }
+    let Some(value) = metadata_value(Some(trimmed)) else {
+        return false;
+    };
+    if metadata.get(key).is_some_and(|existing| existing == &value) {
+        return false;
+    }
+    metadata.insert(key.to_owned(), value);
+    true
 }
 
 fn metadata_value(value: Option<&str>) -> Option<String> {
@@ -390,10 +476,12 @@ fn origin_allowed(headers: &HeaderMap) -> bool {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::HashMap;
+
     use axum::http::header::{HOST, ORIGIN};
     use axum::http::{HeaderMap, HeaderValue};
 
-    use super::origin_allowed;
+    use super::{SessionPlacement, apply_session_placement, origin_allowed};
 
     #[test]
     fn validates_origin_host_match() {
@@ -404,5 +492,49 @@ mod tests {
 
         headers.insert(ORIGIN, HeaderValue::from_static("https://other.test"));
         assert!(!origin_allowed(&headers));
+    }
+
+    #[test]
+    fn applies_session_placement_metadata() {
+        let mut metadata = HashMap::new();
+
+        let changed = apply_session_placement(
+            &mut metadata,
+            SessionPlacement {
+                tab_id: Some("tab-1"),
+                pane_id: Some("pane-2"),
+                tab_title: Some(" Build "),
+                tab_order: Some("3"),
+                pane_order: Some("1"),
+            },
+        );
+
+        assert!(changed);
+        assert_eq!(metadata.get("tabId").map(String::as_str), Some("tab-1"));
+        assert_eq!(metadata.get("paneId").map(String::as_str), Some("pane-2"));
+        assert_eq!(metadata.get("tabTitle").map(String::as_str), Some("Build"));
+        assert_eq!(metadata.get("tabOrder").map(String::as_str), Some("3"));
+        assert_eq!(metadata.get("paneOrder").map(String::as_str), Some("1"));
+    }
+
+    #[test]
+    fn clears_empty_tab_title_without_dropping_order() {
+        let mut metadata = HashMap::from([
+            ("tabTitle".to_owned(), "Build".to_owned()),
+            ("tabOrder".to_owned(), "2".to_owned()),
+        ]);
+
+        let changed = apply_session_placement(
+            &mut metadata,
+            SessionPlacement {
+                tab_title: Some(" "),
+                tab_order: Some("2"),
+                ..SessionPlacement::default()
+            },
+        );
+
+        assert!(changed);
+        assert!(!metadata.contains_key("tabTitle"));
+        assert_eq!(metadata.get("tabOrder").map(String::as_str), Some("2"));
     }
 }

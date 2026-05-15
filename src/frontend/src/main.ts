@@ -312,7 +312,7 @@ function updatePaneMenuForPane(paneId: string) {
   const tab = pane ? tabForPane(pane) : undefined;
   const promote = elements.paneMenu.querySelector<HTMLButtonElement>('[data-pane-action="promote-session-to-tab"]');
   if (promote) {
-    promote.hidden = !tab || tab.panes.length <= 1;
+    promote.hidden = !tab || visiblePanes(tab).length <= 1;
   }
 }
 
@@ -596,37 +596,46 @@ async function restoreSessions() {
     const response = await client.listSessions({});
     let sessions = response.sessions
       .filter((session) => session.id && session.selector && session.status !== "closed")
-      .sort((left, right) => sessionHost(left).localeCompare(sessionHost(right)) || left.id.localeCompare(right.id));
+      .sort(compareSessionsForRestore);
     if (!settings.autoRestartSessions) {
       await cleanupStoppedSessions(sessions);
       sessions = sessions.filter((session) => session.status === "running");
     }
     if (!sessions.length) return;
 
-    const restoredTabs = new Map<string, { tabId?: string; host: string; sessions: Session[] }>();
+    const restoredTabs = new Map<string, { tabId?: string; host: string; title?: string; order: number; sessions: Session[] }>();
     for (const session of sessions) {
       const key = sessionTabKey(session);
       const host = sessionHost(session);
+      const title = sessionTabTitle(session);
+      const order = sessionMetadataIndex(session, "tabOrder", Number.MAX_SAFE_INTEGER);
       const group = restoredTabs.get(key);
       if (group) {
         group.sessions.push(session);
+        group.order = Math.min(group.order, order);
+        group.title ??= title;
       } else {
         restoredTabs.set(key, {
           tabId: session.metadata.tabId?.trim() || undefined,
           host,
+          title,
+          order,
           sessions: [session],
         });
       }
     }
 
-    for (const group of restoredTabs.values()) {
+    const groups = [...restoredTabs.values()].sort(
+      (left, right) => left.order - right.order || left.host.localeCompare(right.host) || (left.tabId ?? "").localeCompare(right.tabId ?? ""),
+    );
+    for (const group of groups) {
       const selector = group.sessions[0]?.selector;
       if (!selector) continue;
       const tab = makeTab(selector, group.tabId);
-      tab.customTitle = group.host;
+      tab.customTitle = group.title || group.host;
       tabs = [...tabs, tab];
       elements.terminalStage.appendChild(tab.mount);
-      for (const session of group.sessions) {
+      for (const session of group.sessions.sort(comparePanesForRestore)) {
         await restorePane(tab, session);
       }
       if (!activeTabId) {
@@ -689,6 +698,27 @@ function sessionHost(session: Session): string {
 
 function sessionTabKey(session: Session): string {
   return session.metadata.tabId?.trim() || `session:${session.id}`;
+}
+
+function sessionTabTitle(session: Session): string | undefined {
+  return session.metadata.tabTitle?.trim() || undefined;
+}
+
+function compareSessionsForRestore(left: Session, right: Session): number {
+  return sessionMetadataIndex(left, "tabOrder", Number.MAX_SAFE_INTEGER) - sessionMetadataIndex(right, "tabOrder", Number.MAX_SAFE_INTEGER)
+    || sessionHost(left).localeCompare(sessionHost(right))
+    || sessionTabKey(left).localeCompare(sessionTabKey(right))
+    || comparePanesForRestore(left, right);
+}
+
+function comparePanesForRestore(left: Session, right: Session): number {
+  return sessionMetadataIndex(left, "paneOrder", Number.MAX_SAFE_INTEGER) - sessionMetadataIndex(right, "paneOrder", Number.MAX_SAFE_INTEGER)
+    || left.id.localeCompare(right.id);
+}
+
+function sessionMetadataIndex(session: Session, key: string, fallback: number): number {
+  const value = Number.parseInt(session.metadata[key] ?? "", 10);
+  return Number.isFinite(value) ? value : fallback;
 }
 
 async function createSelectedTab() {
@@ -793,12 +823,16 @@ async function createPane(tab: TerminalTab, placement: SplitPlacement) {
         frontend: "wterm-ghostty",
         tabId: tab.id,
         paneId: pane.id,
+        tabTitle: tab.customTitle?.trim() ?? "",
+        tabOrder: String(tabOrder(tab)),
+        paneOrder: String(paneOrder(tab, pane)),
         split: placement,
         autoRestart: String(settings.autoRestartSessions),
         restartable: String(settings.autoRestartSessions),
       },
     });
     pane.session = response.session;
+    syncAllTabMetadata();
     setPaneStatus(pane, tr("status.loadingGhostty"));
     await mountTerminal(pane);
     openSocket(pane);
@@ -966,6 +1000,9 @@ function openSocket(pane: TerminalPane) {
   url.searchParams.set("replay", String(!pane.connectedOnce));
   url.searchParams.set("tab_id", pane.tabId);
   url.searchParams.set("pane_id", pane.id);
+  url.searchParams.set("tab_title", tabForPane(pane)?.customTitle?.trim() ?? "");
+  url.searchParams.set("tab_order", String(tabOrder(tabForPane(pane))));
+  url.searchParams.set("pane_order", String(paneOrder(tabForPane(pane), pane)));
 
   pane.exited = false;
   pane.socket = new WebSocket(url);
@@ -1000,16 +1037,39 @@ function sendRestartPolicy(pane: TerminalPane) {
 }
 
 function syncPanePlacement(pane: TerminalPane) {
+  const tab = tabForPane(pane);
   if (pane.session) {
     pane.session.metadata.tabId = pane.tabId;
     pane.session.metadata.paneId = pane.id;
+    pane.session.metadata.tabOrder = String(tabOrder(tab));
+    pane.session.metadata.paneOrder = String(paneOrder(tab, pane));
+    const title = tab?.customTitle?.trim() ?? "";
+    if (title) {
+      pane.session.metadata.tabTitle = title;
+    } else {
+      delete pane.session.metadata.tabTitle;
+    }
   }
   sendPanePlacement(pane);
 }
 
+function syncAllTabMetadata() {
+  for (const pane of allPanes()) {
+    syncPanePlacement(pane);
+  }
+}
+
 function sendPanePlacement(pane: TerminalPane) {
   if (pane.socket?.readyState !== WebSocket.OPEN) return;
-  pane.socket.send(JSON.stringify({ type: "session-placement", tab_id: pane.tabId, pane_id: pane.id }));
+  const tab = tabForPane(pane);
+  pane.socket.send(JSON.stringify({
+    type: "session-placement",
+    tab_id: pane.tabId,
+    pane_id: pane.id,
+    tab_title: tab?.customTitle?.trim() ?? "",
+    tab_order: String(tabOrder(tab)),
+    pane_order: String(paneOrder(tab, pane)),
+  }));
 }
 
 function handleSocketMessage(pane: TerminalPane, event: MessageEvent) {
@@ -1189,6 +1249,7 @@ function commitTabRename(tabId: string, value: string) {
   const trimmed = value.trim();
   const defaultName = String(tabs.findIndex((item) => item.id === tab.id) + 1);
   tab.customTitle = trimmed && trimmed !== defaultName ? trimmed : undefined;
+  syncAllTabMetadata();
   renderTabs();
   updateActiveDetails();
   activePane()?.term?.focus();
@@ -1223,6 +1284,7 @@ function closeTab(tabId: string) {
   }
   if (activeTabId) {
     activateTab(activeTabId);
+    syncAllTabMetadata();
   } else {
     renderTabs();
     updateActiveDetails();
@@ -1231,7 +1293,7 @@ function closeTab(tabId: string) {
 }
 
 function closeActiveSession(tab: TerminalTab, pane: TerminalPane) {
-  if (tab.panes.length <= 1) {
+  if (visiblePanes(tab).length <= 1) {
     closeTab(tab.id);
     return;
   }
@@ -1248,11 +1310,12 @@ function closeActiveSession(tab: TerminalTab, pane: TerminalPane) {
   renderPaneLayout(tab);
   renderTabs();
   updateActiveDetails();
+  syncAllTabMetadata();
   activePane(tab)?.term?.focus();
 }
 
 function promoteSessionToNewTab(sourceTab: TerminalTab, pane: TerminalPane) {
-  if (sourceTab.panes.length <= 1) return;
+  if (visiblePanes(sourceTab).length <= 1) return;
   const paneIndex = sourceTab.panes.findIndex((item) => item.id === pane.id);
   if (paneIndex < 0) return;
 
@@ -1282,8 +1345,8 @@ function promoteSessionToNewTab(sourceTab: TerminalTab, pane: TerminalPane) {
   sourceTab.mount.after(promotedTab.mount);
   renderPaneLayout(sourceTab);
   renderPaneLayout(promotedTab);
-  syncPanePlacement(pane);
   activateTab(promotedTab.id);
+  syncAllTabMetadata();
 }
 
 function closePaneSession(pane: TerminalPane) {
@@ -1380,12 +1443,37 @@ function allPanes(): TerminalPane[] {
   return tabs.flatMap((tab) => tab.panes);
 }
 
+function visiblePanes(tab: TerminalTab): TerminalPane[] {
+  return tab.panes.filter((pane) => !pane.closing);
+}
+
 function findPaneById(id: string): TerminalPane | undefined {
   return allPanes().find((pane) => pane.id === id);
 }
 
 function tabForPane(pane: TerminalPane): TerminalTab | undefined {
   return tabs.find((tab) => tab.id === pane.tabId);
+}
+
+function tabOrder(tab: TerminalTab | undefined): number {
+  if (!tab) return tabs.length;
+  const index = tabs.findIndex((item) => item.id === tab.id);
+  return index >= 0 ? index : tabs.length;
+}
+
+function paneOrder(tab: TerminalTab | undefined, pane: TerminalPane): number {
+  if (!tab) return 0;
+  const layoutOrder = paneIdsInLayout(tab.layout);
+  const layoutIndex = layoutOrder.indexOf(pane.id);
+  if (layoutIndex >= 0) return layoutIndex;
+  const paneIndex = tab.panes.findIndex((item) => item.id === pane.id);
+  return paneIndex >= 0 ? paneIndex : tab.panes.length;
+}
+
+function paneIdsInLayout(node: SplitNode | undefined): string[] {
+  if (!node) return [];
+  if (node.type === "pane") return [node.paneId];
+  return node.children.flatMap(paneIdsInLayout);
 }
 
 function scheduleCopySelection() {

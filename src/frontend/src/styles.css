@@ -514,6 +514,10 @@ input:focus-visible {
   text-align: left;
 }
 
+.pane-menu button[hidden] {
+  display: none;
+}
+
 .pane-menu button:hover,
 .pane-menu button:focus-visible {
   background: rgba(149, 163, 175, 0.12);
