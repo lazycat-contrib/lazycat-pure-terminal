@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::sync::Arc;
 
 use anyhow::anyhow;
@@ -27,6 +28,8 @@ pub struct TerminalQuery {
     rows: Option<u16>,
     restart: Option<String>,
     replay: Option<String>,
+    tab_id: Option<String>,
+    pane_id: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -35,6 +38,7 @@ enum TerminalClientMessage {
     Input { data: String },
     Resize { cols: u16, rows: u16 },
     RestartPolicy { enabled: bool },
+    SessionPlacement { tab_id: String, pane_id: String },
     Close,
 }
 
@@ -197,6 +201,10 @@ fn handle_terminal_control_message(
             set_session_restartable(state, terminal.session_id(), enabled)?;
             Ok(true)
         }
+        Ok(TerminalClientMessage::SessionPlacement { tab_id, pane_id }) => {
+            set_session_placement(state, terminal.session_id(), &tab_id, &pane_id)?;
+            Ok(true)
+        }
         Ok(TerminalClientMessage::Close) => Ok(false),
         Err(_) => {
             warn!(message = ?text, "ignored non-control websocket text frame");
@@ -251,9 +259,15 @@ fn resolve_terminal_target(
             if let Some(restartable) = restart {
                 session.set_restartable(restartable);
             }
+            if let Some(tab_id) = metadata_value(query.tab_id.as_deref()) {
+                session.metadata.insert("tabId".to_owned(), tab_id);
+            }
+            if let Some(pane_id) = metadata_value(query.pane_id.as_deref()) {
+                session.metadata.insert("paneId".to_owned(), pane_id);
+            }
             let spec = session.terminal_spec(cols, rows);
             let status = session.status.clone();
-            if restart.is_some() {
+            if restart.is_some() || query.tab_id.is_some() || query.pane_id.is_some() {
                 snapshot = Some(sessions.clone());
             }
             (spec, status)
@@ -313,6 +327,45 @@ fn set_session_restartable(
     };
     state.persist_sessions_snapshot(&snapshot)?;
     Ok(())
+}
+
+fn set_session_placement(
+    state: &AppState,
+    session_id: &str,
+    tab_id: &str,
+    pane_id: &str,
+) -> anyhow::Result<()> {
+    let mut metadata = HashMap::new();
+    if let Some(tab_id) = metadata_value(Some(tab_id)) {
+        metadata.insert("tabId".to_owned(), tab_id);
+    }
+    if let Some(pane_id) = metadata_value(Some(pane_id)) {
+        metadata.insert("paneId".to_owned(), pane_id);
+    }
+    if metadata.is_empty() {
+        return Ok(());
+    }
+    let snapshot = {
+        let mut sessions = state
+            .sessions
+            .write()
+            .map_err(|_| anyhow!("session store lock poisoned"))?;
+        let session = sessions
+            .get_mut(session_id)
+            .ok_or_else(|| anyhow!("unknown session id"))?;
+        session.metadata.extend(metadata);
+        sessions.clone()
+    };
+    state.persist_sessions_snapshot(&snapshot)?;
+    Ok(())
+}
+
+fn metadata_value(value: Option<&str>) -> Option<String> {
+    let value = value?.trim();
+    if value.is_empty() || value.len() > 128 {
+        return None;
+    }
+    Some(value.to_owned())
 }
 
 fn parse_query_bool(value: Option<&str>, name: &str) -> anyhow::Result<Option<bool>> {

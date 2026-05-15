@@ -196,6 +196,10 @@ export function renderShell(app: HTMLElement): ShellElements {
           <i data-lucide="copy"></i>
           <span data-i18n="action.copySelection">Copy selection</span>
         </button>
+        <button type="button" data-pane-action="promote-session-to-tab" role="menuitem" hidden>
+          <i data-lucide="external-link"></i>
+          <span data-i18n="action.promoteSessionToTab">Move session to new tab</span>
+        </button>
         <button type="button" data-pane-action="close-active-session" data-tone="danger" role="menuitem">
           <i data-lucide="square-x"></i>
           <span data-i18n="action.closeActiveSession">Close active session</span>

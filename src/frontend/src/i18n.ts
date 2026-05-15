@@ -8,6 +8,7 @@ export type MessageKey =
   | "action.copySelection"
   | "action.focusTerminal"
   | "action.newTab"
+  | "action.promoteSessionToTab"
   | "action.refreshInstances"
   | "action.removeFont"
   | "action.settings"
@@ -89,6 +90,7 @@ const messages: Record<Language, Record<MessageKey, string>> = {
     "action.copySelection": "Copy selection",
     "action.focusTerminal": "Focus terminal",
     "action.newTab": "New terminal tab",
+    "action.promoteSessionToTab": "Move session to new tab",
     "action.refreshInstances": "Refresh instances",
     "action.removeFont": "Remove selected font",
     "action.settings": "Settings",
@@ -169,6 +171,7 @@ const messages: Record<Language, Record<MessageKey, string>> = {
     "action.copySelection": "复制选区",
     "action.focusTerminal": "聚焦终端",
     "action.newTab": "新建终端标签",
+    "action.promoteSessionToTab": "将会话提升为新标签",
     "action.refreshInstances": "刷新实例",
     "action.removeFont": "移除当前字体",
     "action.settings": "设置",

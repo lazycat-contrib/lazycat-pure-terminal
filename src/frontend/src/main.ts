@@ -292,6 +292,7 @@ function closeInstanceMenu() {
 
 function openPaneMenu(clientX: number, clientY: number, paneId: string) {
   contextPaneId = paneId;
+  updatePaneMenuForPane(paneId);
   elements.paneMenu.hidden = false;
   elements.paneMenu.style.left = "0";
   elements.paneMenu.style.top = "0";
@@ -304,6 +305,15 @@ function openPaneMenu(clientX: number, clientY: number, paneId: string) {
     elements.paneMenu.style.left = `${left}px`;
     elements.paneMenu.style.top = `${top}px`;
   });
+}
+
+function updatePaneMenuForPane(paneId: string) {
+  const pane = findPaneById(paneId);
+  const tab = pane ? tabForPane(pane) : undefined;
+  const promote = elements.paneMenu.querySelector<HTMLButtonElement>('[data-pane-action="promote-session-to-tab"]');
+  if (promote) {
+    promote.hidden = !tab || tab.panes.length <= 1;
+  }
 }
 
 function closePaneMenu() {
@@ -330,6 +340,8 @@ async function runPaneMenuAction(action: string) {
     await splitActivePane("right");
   } else if (action === "copy-selection") {
     await copySelection(true);
+  } else if (action === "promote-session-to-tab" && tab && pane) {
+    promoteSessionToNewTab(tab, pane);
   } else if (action === "close-active-session" && tab && pane) {
     closeActiveSession(tab, pane);
   }
@@ -591,20 +603,30 @@ async function restoreSessions() {
     }
     if (!sessions.length) return;
 
-    const byHost = new Map<string, Session[]>();
+    const restoredTabs = new Map<string, { tabId?: string; host: string; sessions: Session[] }>();
     for (const session of sessions) {
+      const key = sessionTabKey(session);
       const host = sessionHost(session);
-      byHost.set(host, [...(byHost.get(host) ?? []), session]);
+      const group = restoredTabs.get(key);
+      if (group) {
+        group.sessions.push(session);
+      } else {
+        restoredTabs.set(key, {
+          tabId: session.metadata.tabId?.trim() || undefined,
+          host,
+          sessions: [session],
+        });
+      }
     }
 
-    for (const [host, hostSessions] of byHost) {
-      const selector = hostSessions[0]?.selector;
+    for (const group of restoredTabs.values()) {
+      const selector = group.sessions[0]?.selector;
       if (!selector) continue;
-      const tab = makeTab(selector);
-      tab.customTitle = host;
+      const tab = makeTab(selector, group.tabId);
+      tab.customTitle = group.host;
       tabs = [...tabs, tab];
       elements.terminalStage.appendChild(tab.mount);
-      for (const session of hostSessions) {
+      for (const session of group.sessions) {
         await restorePane(tab, session);
       }
       if (!activeTabId) {
@@ -665,6 +687,10 @@ function sessionHost(session: Session): string {
   return session.metadata.host?.trim() || selectorLabel(session.selector || "");
 }
 
+function sessionTabKey(session: Session): string {
+  return session.metadata.tabId?.trim() || `session:${session.id}`;
+}
+
 async function createSelectedTab() {
   if (!selectedSelector) {
     setGlobalStatus(tr("status.selectRunningInstance"), "error");
@@ -681,8 +707,8 @@ async function createTerminalTab(selector: string) {
   await createPane(tab, "down");
 }
 
-function makeTab(selector: string): TerminalTab {
-  const id = newId();
+function makeTab(selector: string, restoredId?: string): TerminalTab {
+  const id = restoredId || newId();
   const mount = document.createElement("div");
   mount.className = "tab-mount";
   mount.dataset.tabId = id;
@@ -706,10 +732,17 @@ function makePane(tab: TerminalTab): TerminalPane {
   mount.tabIndex = 0;
   mount.setAttribute("role", "group");
   mount.setAttribute("aria-label", `${tab.label} pane`);
-  mount.addEventListener("pointerdown", () => activatePane(tab.id, id));
+  mount.addEventListener("pointerdown", () => {
+    const current = findPaneById(id);
+    if (current) {
+      activatePane(current.tabId, id);
+    }
+  });
   mount.addEventListener("contextmenu", (event) => {
     event.preventDefault();
-    activatePane(tab.id, id);
+    const current = findPaneById(id);
+    if (!current) return;
+    activatePane(current.tabId, id);
     openPaneMenu(event.clientX, event.clientY, id);
   });
   mount.addEventListener("mouseup", () => {
@@ -931,6 +964,8 @@ function openSocket(pane: TerminalPane) {
   url.searchParams.set("rows", String(pane.term?.rows ?? INITIAL_ROWS));
   url.searchParams.set("restart", String(settings.autoRestartSessions));
   url.searchParams.set("replay", String(!pane.connectedOnce));
+  url.searchParams.set("tab_id", pane.tabId);
+  url.searchParams.set("pane_id", pane.id);
 
   pane.exited = false;
   pane.socket = new WebSocket(url);
@@ -939,6 +974,7 @@ function openSocket(pane: TerminalPane) {
     pane.reconnectDelay = 1000;
     pane.connectedOnce = true;
     sendRestartPolicy(pane);
+    sendPanePlacement(pane);
     setPaneStatus(pane, tr("status.connected"), "ok");
     if (activeTabId === pane.tabId && activePane()?.id === pane.id) {
       pane.term?.focus();
@@ -961,6 +997,19 @@ function syncRestartPolicyToServer() {
 function sendRestartPolicy(pane: TerminalPane) {
   if (pane.socket?.readyState !== WebSocket.OPEN) return;
   pane.socket.send(JSON.stringify({ type: "restart-policy", enabled: settings.autoRestartSessions }));
+}
+
+function syncPanePlacement(pane: TerminalPane) {
+  if (pane.session) {
+    pane.session.metadata.tabId = pane.tabId;
+    pane.session.metadata.paneId = pane.id;
+  }
+  sendPanePlacement(pane);
+}
+
+function sendPanePlacement(pane: TerminalPane) {
+  if (pane.socket?.readyState !== WebSocket.OPEN) return;
+  pane.socket.send(JSON.stringify({ type: "session-placement", tab_id: pane.tabId, pane_id: pane.id }));
 }
 
 function handleSocketMessage(pane: TerminalPane, event: MessageEvent) {
@@ -1200,6 +1249,41 @@ function closeActiveSession(tab: TerminalTab, pane: TerminalPane) {
   renderTabs();
   updateActiveDetails();
   activePane(tab)?.term?.focus();
+}
+
+function promoteSessionToNewTab(sourceTab: TerminalTab, pane: TerminalPane) {
+  if (sourceTab.panes.length <= 1) return;
+  const paneIndex = sourceTab.panes.findIndex((item) => item.id === pane.id);
+  if (paneIndex < 0) return;
+
+  sourceTab.panes = sourceTab.panes.filter((item) => item.id !== pane.id);
+  sourceTab.layout = removePaneFromLayout(sourceTab.layout, pane.id) ?? paneLayoutNode(sourceTab.panes[0].id);
+  if (sourceTab.activePaneId === pane.id) {
+    sourceTab.activePaneId = sourceTab.panes[Math.min(paneIndex, sourceTab.panes.length - 1)]?.id;
+  }
+
+  const promotedTab = makeTab(sourceTab.selector);
+  const title = pane.title.trim();
+  if (title && title !== pane.label) {
+    promotedTab.customTitle = title;
+  }
+  pane.tabId = promotedTab.id;
+  promotedTab.panes = [pane];
+  promotedTab.activePaneId = pane.id;
+  promotedTab.layout = paneLayoutNode(pane.id);
+
+  const sourceIndex = tabs.findIndex((item) => item.id === sourceTab.id);
+  if (sourceIndex < 0) return;
+  tabs = [
+    ...tabs.slice(0, sourceIndex + 1),
+    promotedTab,
+    ...tabs.slice(sourceIndex + 1),
+  ];
+  sourceTab.mount.after(promotedTab.mount);
+  renderPaneLayout(sourceTab);
+  renderPaneLayout(promotedTab);
+  syncPanePlacement(pane);
+  activateTab(promotedTab.id);
 }
 
 function closePaneSession(pane: TerminalPane) {
