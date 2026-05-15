@@ -3,12 +3,18 @@ buildscript: |
   set -eu
   CONTENT_DIR="./dist/content"
   rm -rf "$CONTENT_DIR"
-  mkdir -p "$CONTENT_DIR/static"
+  mkdir -p "$CONTENT_DIR"
   npm ci
   npm run build
-  cargo build --release
-  cp target/release/lazycat-pure-terminal "$CONTENT_DIR/lazycat-pure-terminal"
-  cp -R src/frontend/dist/. "$CONTENT_DIR/static/"
+  command -v musl-gcc >/dev/null
+  rustup target list --installed | grep -q '^x86_64-unknown-linux-musl$'
+  RUST_LLD="$(find "$(rustc --print sysroot)" -name rust-lld -type f -print -quit)"
+  test -n "$RUST_LLD"
+  CC_x86_64_unknown_linux_musl=musl-gcc \
+    CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_LINKER="$RUST_LLD" \
+    RUSTFLAGS="-C target-feature=+crt-static" \
+    cargo build --release --target x86_64-unknown-linux-musl
+  cp target/x86_64-unknown-linux-musl/release/lazycat-pure-terminal "$CONTENT_DIR/lazycat-pure-terminal"
 contentdir: ./dist/content
 resource_exports:
   - kind: lightos.webshell

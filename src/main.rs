@@ -3,19 +3,22 @@
 use std::collections::HashMap;
 use std::io::{Read, Write};
 use std::net::SocketAddr;
-use std::path::PathBuf;
+use std::path::{Path as FsPath, PathBuf};
 use std::sync::{Arc, Mutex, RwLock, RwLockReadGuard, RwLockWriteGuard};
 use std::thread;
 use std::time::Duration;
 
 use anyhow::{Context as AnyhowContext, anyhow};
+use axum::Json;
 use axum::Router;
+use axum::body::Body;
+use axum::body::Bytes;
 use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
-use axum::extract::{Query, State};
-use axum::http::header::{CONTENT_SECURITY_POLICY, HOST, ORIGIN};
+use axum::extract::{DefaultBodyLimit, Path, Query, State};
+use axum::http::header::{CACHE_CONTROL, CONTENT_SECURITY_POLICY, CONTENT_TYPE, HOST, ORIGIN};
 use axum::http::{HeaderMap, HeaderName, HeaderValue, StatusCode, Uri};
 use axum::response::{Html, IntoResponse, Response};
-use axum::routing::get;
+use axum::routing::{delete, get};
 use buffa::MessageField;
 use connectrpc::{
     ConnectError, RequestContext, Response as ConnectResponse, Router as ConnectRouter,
@@ -26,7 +29,6 @@ use portable_pty::{CommandBuilder, MasterPty, NativePtySystem, PtySize, PtySyste
 use serde::{Deserialize, Serialize};
 use tokio::sync::mpsc;
 use tokio::time::timeout;
-use tower_http::services::ServeDir;
 use tower_http::set_header::SetResponseHeaderLayer;
 use tower_http::trace::TraceLayer;
 use tracing::{debug, info, warn};
@@ -35,6 +37,10 @@ use uuid::Uuid;
 #[allow(clippy::all, clippy::pedantic, warnings)]
 pub mod proto {
     connectrpc::include_generated!();
+}
+
+mod embedded_frontend {
+    include!(concat!(env!("OUT_DIR"), "/frontend_assets.rs"));
 }
 
 use proto::lazycat::webshell::v1::{
@@ -55,10 +61,11 @@ const DEFAULT_COLS: u16 = 120;
 const DEFAULT_ROWS: u16 = 32;
 const MAX_COLS: u16 = 500;
 const MAX_ROWS: u16 = 200;
+const MAX_FONT_BYTES: usize = 10 * 1024 * 1024;
+const DEFAULT_FONT_DIR: &str = "/lzcapp/var/fonts";
 
 #[derive(Clone)]
 struct AppState {
-    root_dir: PathBuf,
     sessions: Arc<RwLock<HashMap<String, SessionRecord>>>,
     plugins: Arc<RwLock<HashMap<String, PluginRecord>>>,
 }
@@ -105,6 +112,34 @@ struct LightOsInstance {
     owner_deploy_id: String,
     #[serde(default)]
     status: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct FontUploadQuery {
+    filename: String,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct FontMetadata {
+    id: String,
+    label: String,
+    family: String,
+    mime_type: String,
+    size: u64,
+    filename: String,
+    extension: String,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct FontDescriptor {
+    id: String,
+    label: String,
+    family: String,
+    mime_type: String,
+    size: u64,
+    url: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -157,7 +192,6 @@ async fn main() -> anyhow::Result<()> {
         .init();
 
     let state = Arc::new(AppState {
-        root_dir: resolve_app_root(),
         sessions: Arc::new(RwLock::new(HashMap::new())),
         plugins: Arc::new(RwLock::new(builtin_plugins())),
     });
@@ -167,14 +201,18 @@ async fn main() -> anyhow::Result<()> {
     });
     let connect = service.register(ConnectRouter::new()).into_axum_router();
 
-    let static_dir = state.root_dir.join("static");
     let app = Router::new()
         .route("/", get(index))
+        .route("/index.html", get(index))
         .route("/healthz", get(|| async { "ok" }))
         .route("/ws/terminal", get(terminal_ws))
-        .nest_service("/assets", ServeDir::new(static_dir.join("assets")))
+        .route("/assets/{*path}", get(frontend_asset))
+        .route("/api/fonts", get(list_fonts).post(upload_font))
+        .route("/api/fonts/{id}", delete(delete_font))
+        .route("/api/fonts/{id}/file", get(font_file))
         .with_state(state)
         .merge(connect)
+        .layer(DefaultBodyLimit::max(MAX_FONT_BYTES))
         .layer(TraceLayer::new_for_http())
         .layer(security_header(
             HeaderName::from_static("x-content-type-options"),
@@ -190,7 +228,7 @@ async fn main() -> anyhow::Result<()> {
         ))
         .layer(security_header(
             CONTENT_SECURITY_POLICY,
-            "default-src 'self'; connect-src 'self' ws: wss:; img-src 'self' data:; style-src 'self' 'unsafe-inline'; script-src 'self' 'wasm-unsafe-eval'; worker-src 'self'; object-src 'none'; base-uri 'self'",
+            "default-src 'self'; connect-src 'self' ws: wss:; font-src 'self' data: blob:; img-src 'self' data:; style-src 'self' 'unsafe-inline'; script-src 'self' 'wasm-unsafe-eval'; worker-src 'self'; object-src 'none'; base-uri 'self'",
         ));
 
     let addr: SocketAddr = "127.0.0.1:8080".parse()?;
@@ -204,16 +242,326 @@ fn security_header(name: HeaderName, value: &'static str) -> SetResponseHeaderLa
     SetResponseHeaderLayer::if_not_present(name, HeaderValue::from_static(value))
 }
 
-async fn index(State(state): State<Arc<AppState>>) -> Response {
-    let path = state.root_dir.join("static").join("index.html");
-    match tokio::fs::read_to_string(path).await {
-        Ok(body) => Html(body).into_response(),
-        Err(err) => (
+async fn index() -> Response {
+    match embedded_asset("index.html") {
+        Some(asset) => Html(String::from_utf8_lossy(asset).into_owned()).into_response(),
+        None => (
             StatusCode::SERVICE_UNAVAILABLE,
-            format!("frontend assets are not built: {err}"),
+            "frontend assets are not embedded; run npm run build before cargo build",
         )
             .into_response(),
     }
+}
+
+async fn frontend_asset(Path(path): Path<String>) -> Response {
+    let path = format!("assets/{path}");
+    let Some(asset) = embedded_asset_response(&path) else {
+        return StatusCode::NOT_FOUND.into_response();
+    };
+    asset
+}
+
+fn embedded_asset(path: &str) -> Option<&'static [u8]> {
+    embedded_frontend::FRONTEND_ASSETS
+        .iter()
+        .find_map(|(asset_path, bytes)| (*asset_path == path).then_some(*bytes))
+}
+
+fn embedded_asset_response(path: &str) -> Option<Response> {
+    let bytes = embedded_asset(path)?;
+    let content_type = mime_guess::from_path(path).first_or_octet_stream();
+    let content_type = HeaderValue::from_str(content_type.essence_str()).ok()?;
+
+    let mut response = Response::new(Body::from(Bytes::from_static(bytes)));
+    let headers = response.headers_mut();
+    headers.insert(CONTENT_TYPE, content_type);
+    headers.insert(
+        CACHE_CONTROL,
+        HeaderValue::from_static("public, max-age=31536000, immutable"),
+    );
+    Some(response)
+}
+
+async fn list_fonts() -> Response {
+    match read_font_metadata().await {
+        Ok(fonts) => Json(
+            fonts
+                .into_iter()
+                .map(FontMetadata::descriptor)
+                .collect::<Vec<_>>(),
+        )
+        .into_response(),
+        Err(err) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("failed to list fonts: {err}"),
+        )
+            .into_response(),
+    }
+}
+
+async fn upload_font(
+    headers: HeaderMap,
+    Query(query): Query<FontUploadQuery>,
+    body: Bytes,
+) -> Response {
+    match store_font(&headers, &query.filename, body).await {
+        Ok(font) => (StatusCode::CREATED, Json(font.descriptor())).into_response(),
+        Err(FontError::BadRequest(message)) => (StatusCode::BAD_REQUEST, message).into_response(),
+        Err(FontError::Io(err)) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("failed to store font: {err}"),
+        )
+            .into_response(),
+    }
+}
+
+async fn delete_font(Path(id): Path<String>) -> Response {
+    match remove_font(&id).await {
+        Ok(()) => StatusCode::NO_CONTENT.into_response(),
+        Err(FontError::BadRequest(message)) => (StatusCode::BAD_REQUEST, message).into_response(),
+        Err(FontError::Io(err)) if err.kind() == std::io::ErrorKind::NotFound => {
+            StatusCode::NOT_FOUND.into_response()
+        }
+        Err(FontError::Io(err)) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("failed to delete font: {err}"),
+        )
+            .into_response(),
+    }
+}
+
+async fn font_file(Path(id): Path<String>) -> Response {
+    match read_font_file(&id).await {
+        Ok((metadata, bytes)) => font_response(&metadata, bytes),
+        Err(FontError::BadRequest(message)) => (StatusCode::BAD_REQUEST, message).into_response(),
+        Err(FontError::Io(err)) if err.kind() == std::io::ErrorKind::NotFound => {
+            StatusCode::NOT_FOUND.into_response()
+        }
+        Err(FontError::Io(err)) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("failed to read font: {err}"),
+        )
+            .into_response(),
+    }
+}
+
+fn font_response(metadata: &FontMetadata, bytes: Bytes) -> Response {
+    let mut response = Response::new(Body::from(bytes));
+    let headers = response.headers_mut();
+    if let Ok(value) = HeaderValue::from_str(&metadata.mime_type) {
+        headers.insert(CONTENT_TYPE, value);
+    }
+    headers.insert(
+        CACHE_CONTROL,
+        HeaderValue::from_static("public, max-age=31536000, immutable"),
+    );
+    response
+}
+
+#[derive(Debug)]
+enum FontError {
+    BadRequest(String),
+    Io(std::io::Error),
+}
+
+impl From<std::io::Error> for FontError {
+    fn from(value: std::io::Error) -> Self {
+        Self::Io(value)
+    }
+}
+
+impl FontMetadata {
+    fn descriptor(self) -> FontDescriptor {
+        FontDescriptor {
+            url: format!("/api/fonts/{}/file", self.id),
+            id: self.id,
+            label: self.label,
+            family: self.family,
+            mime_type: self.mime_type,
+            size: self.size,
+        }
+    }
+}
+
+async fn read_font_metadata() -> std::io::Result<Vec<FontMetadata>> {
+    let dir = ensure_font_dir().await?;
+    let mut fonts = Vec::new();
+    let mut entries = tokio::fs::read_dir(dir).await?;
+    while let Some(entry) = entries.next_entry().await? {
+        let path = entry.path();
+        if path.extension().and_then(|value| value.to_str()) != Some("json") {
+            continue;
+        }
+        let bytes = tokio::fs::read(&path).await?;
+        match serde_json::from_slice::<FontMetadata>(&bytes) {
+            Ok(metadata) if valid_font_id(&metadata.id) => fonts.push(metadata),
+            Ok(_) | Err(_) => warn!(path = %path.display(), "ignored invalid font metadata"),
+        }
+    }
+    fonts.sort_by(|left, right| left.label.cmp(&right.label));
+    Ok(fonts)
+}
+
+async fn store_font(
+    headers: &HeaderMap,
+    filename: &str,
+    body: Bytes,
+) -> Result<FontMetadata, FontError> {
+    let extension = validate_font_filename(filename)?;
+    if body.is_empty() || body.len() > MAX_FONT_BYTES {
+        return Err(FontError::BadRequest(
+            "font must be between 1 byte and 10 MB".to_owned(),
+        ));
+    }
+
+    let mime_type = headers
+        .get(CONTENT_TYPE)
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| value.split(';').next())
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .unwrap_or("application/octet-stream");
+    validate_font_mime(mime_type)?;
+
+    let id = Uuid::new_v4().to_string();
+    let metadata = FontMetadata {
+        id: id.clone(),
+        label: font_label(filename),
+        family: format!("PureTerminal-{id}"),
+        mime_type: mime_type.to_owned(),
+        size: u64::try_from(body.len()).unwrap_or(u64::MAX),
+        filename: sanitize_font_filename(filename),
+        extension,
+    };
+
+    let dir = ensure_font_dir().await?;
+    tokio::fs::write(font_data_path(&dir, &metadata), body).await?;
+    let metadata_bytes = serde_json::to_vec_pretty(&metadata)
+        .map_err(|err| std::io::Error::other(err.to_string()))?;
+    tokio::fs::write(font_metadata_path(&dir, &metadata.id), metadata_bytes).await?;
+    Ok(metadata)
+}
+
+async fn remove_font(id: &str) -> Result<(), FontError> {
+    validate_font_id(id)?;
+    let dir = ensure_font_dir().await?;
+    let metadata = read_single_font_metadata(&dir, id).await?;
+    let _ = tokio::fs::remove_file(font_data_path(&dir, &metadata)).await;
+    tokio::fs::remove_file(font_metadata_path(&dir, id)).await?;
+    Ok(())
+}
+
+async fn read_font_file(id: &str) -> Result<(FontMetadata, Bytes), FontError> {
+    validate_font_id(id)?;
+    let dir = ensure_font_dir().await?;
+    let metadata = read_single_font_metadata(&dir, id).await?;
+    let bytes = tokio::fs::read(font_data_path(&dir, &metadata)).await?;
+    Ok((metadata, Bytes::from(bytes)))
+}
+
+async fn read_single_font_metadata(dir: &FsPath, id: &str) -> Result<FontMetadata, FontError> {
+    let bytes = tokio::fs::read(font_metadata_path(dir, id)).await?;
+    serde_json::from_slice::<FontMetadata>(&bytes)
+        .map_err(|err| FontError::Io(std::io::Error::other(err.to_string())))
+}
+
+async fn ensure_font_dir() -> std::io::Result<PathBuf> {
+    let dir = font_dir();
+    tokio::fs::create_dir_all(&dir).await?;
+    Ok(dir)
+}
+
+fn font_dir() -> PathBuf {
+    std::env::var_os("PURE_TERMINAL_FONT_DIR")
+        .map_or_else(|| PathBuf::from(DEFAULT_FONT_DIR), PathBuf::from)
+}
+
+fn font_metadata_path(dir: &FsPath, id: &str) -> PathBuf {
+    dir.join(format!("{id}.json"))
+}
+
+fn font_data_path(dir: &FsPath, metadata: &FontMetadata) -> PathBuf {
+    dir.join(format!("{}.{}", metadata.id, metadata.extension))
+}
+
+fn validate_font_filename(filename: &str) -> Result<String, FontError> {
+    let filename = filename.trim();
+    if filename.is_empty() || filename.contains('/') || filename.contains('\\') {
+        return Err(FontError::BadRequest("invalid font filename".to_owned()));
+    }
+    let extension = filename
+        .rsplit_once('.')
+        .map(|(_, extension)| extension.to_ascii_lowercase())
+        .ok_or_else(|| FontError::BadRequest("font filename must have an extension".to_owned()))?;
+    if !matches!(extension.as_str(), "woff2" | "woff" | "ttf" | "otf") {
+        return Err(FontError::BadRequest(
+            "only .woff, .woff2, .ttf, and .otf are allowed".to_owned(),
+        ));
+    }
+    Ok(extension)
+}
+
+fn validate_font_mime(mime_type: &str) -> Result<(), FontError> {
+    if matches!(
+        mime_type,
+        "font/woff2"
+            | "font/woff"
+            | "font/ttf"
+            | "font/otf"
+            | "application/font-woff"
+            | "application/font-woff2"
+            | "application/x-font-ttf"
+            | "application/x-font-otf"
+            | "application/octet-stream"
+    ) {
+        return Ok(());
+    }
+    Err(FontError::BadRequest(format!(
+        "unsupported font MIME type: {mime_type}"
+    )))
+}
+
+fn validate_font_id(id: &str) -> Result<(), FontError> {
+    if valid_font_id(id) {
+        Ok(())
+    } else {
+        Err(FontError::BadRequest("invalid font id".to_owned()))
+    }
+}
+
+fn valid_font_id(id: &str) -> bool {
+    !id.is_empty()
+        && id.len() <= 64
+        && id
+            .chars()
+            .all(|value| value.is_ascii_alphanumeric() || value == '-')
+}
+
+fn font_label(filename: &str) -> String {
+    let stem = filename.rsplit_once('.').map_or(filename, |(stem, _)| stem);
+    let clean = stem
+        .chars()
+        .map(|value| {
+            if value.is_ascii_alphanumeric() || matches!(value, ' ' | '.' | '-' | '_') {
+                value
+            } else {
+                ' '
+            }
+        })
+        .collect::<String>();
+    let clean = clean.split_whitespace().collect::<Vec<_>>().join(" ");
+    if clean.is_empty() {
+        "Uploaded Font".to_owned()
+    } else {
+        clean
+    }
+}
+
+fn sanitize_font_filename(filename: &str) -> String {
+    filename
+        .chars()
+        .filter(|value| value.is_ascii_alphanumeric() || matches!(value, '.' | '-' | '_'))
+        .collect::<String>()
 }
 
 async fn terminal_ws(
@@ -280,7 +628,7 @@ async fn handle_terminal_socket(
                         let _ = writer_tx.send(WriterCommand::Input(data.to_vec()));
                     }
                     Message::Text(text) => {
-                        if !handle_terminal_text_message(&text, &writer_tx, &master)? {
+                        if !handle_terminal_control_message(&text, &master)? {
                             break;
                         }
                     }
@@ -305,15 +653,10 @@ async fn handle_terminal_socket(
     Ok(())
 }
 
-fn handle_terminal_text_message(
+fn handle_terminal_control_message(
     text: &str,
-    writer_tx: &std::sync::mpsc::Sender<WriterCommand>,
     master: &Arc<Mutex<Box<dyn MasterPty + Send>>>,
 ) -> anyhow::Result<bool> {
-    if let Some(rest) = text.strip_prefix("input:") {
-        let _ = writer_tx.send(WriterCommand::Input(rest.as_bytes().to_vec()));
-        return Ok(true);
-    }
     if let Some(rest) = text.strip_prefix("resize:") {
         let (cols, rows) = parse_resize_payload(rest)?;
         resize_pty(master, cols, rows)?;
@@ -322,7 +665,10 @@ fn handle_terminal_text_message(
 
     match serde_json::from_str::<TerminalClientMessage>(text) {
         Ok(TerminalClientMessage::Input { data }) => {
-            let _ = writer_tx.send(WriterCommand::Input(data.into_bytes()));
+            let _ = data;
+            warn!(
+                "ignored JSON terminal input message; terminal input must use binary websocket frames"
+            );
             Ok(true)
         }
         Ok(TerminalClientMessage::Resize { cols, rows }) => {
@@ -331,7 +677,7 @@ fn handle_terminal_text_message(
         }
         Ok(TerminalClientMessage::Close) => Ok(false),
         Err(_) => {
-            let _ = writer_tx.send(WriterCommand::Input(text.as_bytes().to_vec()));
+            warn!(message = ?text, "ignored non-control websocket text frame");
             Ok(true)
         }
     }
@@ -533,13 +879,6 @@ fn origin_allowed(headers: &HeaderMap) -> bool {
         .ok()
         .and_then(|uri| uri.authority().map(|authority| authority.as_str() == host))
         .unwrap_or(false)
-}
-
-fn resolve_app_root() -> PathBuf {
-    std::env::current_exe()
-        .ok()
-        .and_then(|path| path.parent().map(PathBuf::from))
-        .unwrap_or_else(|| PathBuf::from("."))
 }
 
 struct CapabilityServiceImpl {
@@ -1055,5 +1394,19 @@ mod tests {
 
         headers.insert(ORIGIN, HeaderValue::from_static("https://other.test"));
         assert!(!origin_allowed(&headers));
+    }
+
+    #[test]
+    fn validates_font_upload_boundaries() {
+        assert_eq!(
+            validate_font_filename("JetBrainsMono.woff2").unwrap(),
+            "woff2"
+        );
+        assert!(validate_font_filename("../bad.woff2").is_err());
+        assert!(validate_font_filename("not-a-font.txt").is_err());
+        assert!(validate_font_mime("font/woff2").is_ok());
+        assert!(validate_font_mime("text/html").is_err());
+        assert!(validate_font_id("1d76747b-88ff-449f-9e19-cc89fb1a7a67").is_ok());
+        assert!(validate_font_id("../escape").is_err());
     }
 }
