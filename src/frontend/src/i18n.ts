@@ -3,6 +3,7 @@ import type { LocaleSetting } from "./types";
 type Language = "en" | "zh-CN";
 
 export type MessageKey =
+  | "action.closeActiveSession"
   | "action.closeSettings"
   | "action.copySelection"
   | "action.focusTerminal"
@@ -83,6 +84,7 @@ export type MessageKey =
 
 const messages: Record<Language, Record<MessageKey, string>> = {
   en: {
+    "action.closeActiveSession": "Close active session",
     "action.closeSettings": "Close settings",
     "action.copySelection": "Copy selection",
     "action.focusTerminal": "Focus terminal",
@@ -162,6 +164,7 @@ const messages: Record<Language, Record<MessageKey, string>> = {
     "validation.fontSize": "font must be between 1 byte and 10 MB",
   },
   "zh-CN": {
+    "action.closeActiveSession": "关闭当前活动会话",
     "action.closeSettings": "关闭设置",
     "action.copySelection": "复制选区",
     "action.focusTerminal": "聚焦终端",

@@ -330,6 +330,8 @@ async function runPaneMenuAction(action: string) {
     await splitActivePane("right");
   } else if (action === "copy-selection") {
     await copySelection(true);
+  } else if (action === "close-active-session" && tab && pane) {
+    closeActiveSession(tab, pane);
   }
 }
 
@@ -1086,6 +1088,7 @@ function renderTabs() {
   });
   elements.tabList.querySelectorAll<HTMLElement>("[data-close-tab]").forEach((button) => {
     button.addEventListener("click", (event) => {
+      event.preventDefault();
       event.stopPropagation();
       closeTab(button.dataset.closeTab ?? "");
     });
@@ -1160,14 +1163,7 @@ function closeTab(tabId: string) {
 
   tab.closing = true;
   for (const pane of tab.panes) {
-    pane.closing = true;
-    window.clearTimeout(pane.reconnectTimer);
-    pane.socket?.close();
-    pane.socket = undefined;
-    pane.term?.destroy();
-    if (pane.session?.id) {
-      client.closeSession({ sessionId: pane.session.id }).catch(() => undefined);
-    }
+    closePaneSession(pane);
   }
   tab.mount.remove();
 
@@ -1183,6 +1179,52 @@ function closeTab(tabId: string) {
     updateActiveDetails();
     setGlobalStatus(tr("status.closed"));
   }
+}
+
+function closeActiveSession(tab: TerminalTab, pane: TerminalPane) {
+  if (tab.panes.length <= 1) {
+    closeTab(tab.id);
+    return;
+  }
+
+  const paneIndex = tab.panes.findIndex((item) => item.id === pane.id);
+  if (paneIndex < 0) return;
+
+  closePaneSession(pane);
+  tab.panes = tab.panes.filter((item) => item.id !== pane.id);
+  tab.layout = removePaneFromLayout(tab.layout, pane.id) ?? paneLayoutNode(tab.panes[0].id);
+  if (tab.activePaneId === pane.id) {
+    tab.activePaneId = tab.panes[Math.min(paneIndex, tab.panes.length - 1)]?.id;
+  }
+  renderPaneLayout(tab);
+  renderTabs();
+  updateActiveDetails();
+  activePane(tab)?.term?.focus();
+}
+
+function closePaneSession(pane: TerminalPane) {
+  pane.closing = true;
+  window.clearTimeout(pane.reconnectTimer);
+  pane.socket?.close();
+  pane.socket = undefined;
+  pane.term?.destroy();
+  pane.term = undefined;
+  if (pane.session?.id) {
+    client.closeSession({ sessionId: pane.session.id }).catch(() => undefined);
+  }
+}
+
+function removePaneFromLayout(node: SplitNode | undefined, paneId: string): SplitNode | undefined {
+  if (!node) return undefined;
+  if (node.type === "pane") {
+    return node.paneId === paneId ? undefined : node;
+  }
+  const children = node.children
+    .map((child) => removePaneFromLayout(child, paneId))
+    .filter((child): child is SplitNode => Boolean(child));
+  if (!children.length) return undefined;
+  if (children.length === 1) return children[0];
+  return { ...node, children };
 }
 
 function updatePaneTitle(pane: TerminalPane, title: string) {

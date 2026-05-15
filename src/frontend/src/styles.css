@@ -304,6 +304,7 @@ input:focus-visible {
   position: absolute;
   top: 50%;
   right: 3px;
+  z-index: 2;
   display: inline-grid;
   place-items: center;
   width: 17px;
@@ -358,7 +359,12 @@ input:focus-visible {
 }
 
 .tab-add {
+  position: relative;
   margin: 4px 0;
+}
+
+.tab-add::after {
+  inset: 0;
 }
 
 .webshell[data-tab-layout="vertical"] .tab-add {
@@ -511,6 +517,15 @@ input:focus-visible {
 .pane-menu button:hover,
 .pane-menu button:focus-visible {
   background: rgba(149, 163, 175, 0.12);
+}
+
+.pane-menu button[data-tone="danger"] {
+  color: #fca5a5;
+}
+
+.pane-menu button[data-tone="danger"]:hover,
+.pane-menu button[data-tone="danger"]:focus-visible {
+  background: rgba(239, 68, 68, 0.14);
 }
 
 .pane-menu svg {
