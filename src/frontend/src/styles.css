@@ -6,6 +6,8 @@
   --surface-2: #1b222a;
   --line: #2a333d;
   --line-strong: #465462;
+  --split-line: rgba(148, 163, 184, 0.42);
+  --split-line-glow: rgba(110, 231, 183, 0.16);
   --text: #edf2f7;
   --muted: #95a3af;
   --accent: #6ee7b7;
@@ -657,6 +659,7 @@ input:focus-visible {
 }
 
 .split-container {
+  position: relative;
   display: grid;
   width: 100%;
   height: 100%;
@@ -674,20 +677,28 @@ input:focus-visible {
   grid-template-columns: repeat(var(--split-count), minmax(0, 1fr));
 }
 
-.split-container[data-split-axis="rows"] > :where(.terminal-mount, .split-container) {
-  border-top: 1px solid rgba(148, 163, 184, 0.14);
+.split-container > :where(.terminal-mount, .split-container)::before {
+  content: "";
+  position: absolute;
+  z-index: 4;
+  pointer-events: none;
+  background: var(--split-line);
 }
 
-.split-container[data-split-axis="rows"] > :where(.terminal-mount, .split-container):first-child {
-  border-top: 0;
+.split-container[data-split-axis="rows"] > :where(.terminal-mount, .split-container):not(:first-child)::before {
+  top: 0;
+  right: 0;
+  left: 0;
+  height: 2px;
+  box-shadow: 0 1px 0 rgba(0, 0, 0, 0.34), 0 0 10px var(--split-line-glow);
 }
 
-.split-container[data-split-axis="columns"] > :where(.terminal-mount, .split-container) {
-  border-left: 1px solid rgba(148, 163, 184, 0.14);
-}
-
-.split-container[data-split-axis="columns"] > :where(.terminal-mount, .split-container):first-child {
-  border-left: 0;
+.split-container[data-split-axis="columns"] > :where(.terminal-mount, .split-container):not(:first-child)::before {
+  top: 0;
+  bottom: 0;
+  left: 0;
+  width: 2px;
+  box-shadow: 1px 0 0 rgba(0, 0, 0, 0.34), 0 0 10px var(--split-line-glow);
 }
 
 .terminal-mount.wterm {
