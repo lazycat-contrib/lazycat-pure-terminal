@@ -8,207 +8,22 @@ import { GhosttyCore } from "@wterm/ghostty";
 import { createIcons, icons } from "lucide";
 
 import {
-  CapabilityService,
-  type Instance,
-  type Session,
-} from "./gen/lazycat/webshell/v1/capability_pb";
-
-type Tone = "ok" | "error" | "neutral";
-type TabLayout = "horizontal" | "vertical";
-
-type TerminalTheme = {
-  id: string;
-  label: string;
-  ghosttyName: string;
-  className?: string;
-};
-
-type FontPreset = {
-  id: string;
-  label: string;
-  family: string;
-  custom?: boolean;
-};
-
-type StoredFont = {
-  id: string;
-  label: string;
-  family: string;
-  mimeType?: string;
-  size: number;
-  url: string;
-};
-
-type Settings = {
-  themeId: string;
-  fontFamilyId: string;
-  tabLayout: TabLayout;
-  fontSize: number;
-  lineHeight: number;
-  cursorBlink: boolean;
-  scrollbackLimit: number;
-  debugMode: boolean;
-  aiProvider: string;
-  aiBaseUrl: string;
-  aiApiKey: string;
-  aiModel: string;
-};
-
-type TerminalPane = {
-  id: string;
-  tabId: string;
-  selector: string;
-  label: string;
-  title: string;
-  status: string;
-  tone: Tone;
-  controlState: string;
-  mount: HTMLDivElement;
-  session?: Session;
-  term?: WTerm;
-  socket?: WebSocket;
-  reconnectTimer?: number;
-  reconnectDelay: number;
-  closing: boolean;
-  cols: number;
-  rows: number;
-};
-
-type TerminalTab = {
-  id: string;
-  selector: string;
-  label: string;
-  customTitle?: string;
-  mount: HTMLDivElement;
-  panes: TerminalPane[];
-  activePaneId?: string;
-  closing: boolean;
-};
-
-const INITIAL_COLS = 120;
-const INITIAL_ROWS = 32;
-const STATUS_REFRESH_MS = 700;
-const MAX_FONT_BYTES = 10 * 1024 * 1024;
-const FONT_EXTENSIONS = [".woff2", ".woff", ".ttf", ".otf"];
-const FONT_MIME_TYPES = new Set([
-  "font/woff2",
-  "font/woff",
-  "font/ttf",
-  "font/otf",
-  "application/font-woff",
-  "application/font-woff2",
-  "application/x-font-ttf",
-  "application/x-font-otf",
-  "application/octet-stream",
-]);
-
-const NORMAL_KEYS: Record<string, string> = {
-  ArrowUp: "\x1b[A",
-  ArrowDown: "\x1b[B",
-  ArrowRight: "\x1b[C",
-  ArrowLeft: "\x1b[D",
-  Home: "\x1b[H",
-  End: "\x1b[F",
-};
-
-const APP_KEYS: Record<string, string> = {
-  ArrowUp: "\x1bOA",
-  ArrowDown: "\x1bOB",
-  ArrowRight: "\x1bOC",
-  ArrowLeft: "\x1bOD",
-  Home: "\x1bOH",
-  End: "\x1bOF",
-};
-
-const FIXED_KEYS: Record<string, string> = {
-  Enter: "\r",
-  Backspace: "\x7f",
-  Tab: "\t",
-  Escape: "\x1b",
-  Insert: "\x1b[2~",
-  Delete: "\x1b[3~",
-  PageUp: "\x1b[5~",
-  PageDown: "\x1b[6~",
-  F1: "\x1bOP",
-  F2: "\x1bOQ",
-  F3: "\x1bOR",
-  F4: "\x1bOS",
-  F5: "\x1b[15~",
-  F6: "\x1b[17~",
-  F7: "\x1b[18~",
-  F8: "\x1b[19~",
-  F9: "\x1b[20~",
-  F10: "\x1b[21~",
-  F11: "\x1b[23~",
-  F12: "\x1b[24~",
-};
-
-const THEMES: TerminalTheme[] = [
-  { id: "ghostty", label: "Ghostty Default", ghosttyName: "Ghostty Default" },
-  { id: "catppuccin-mocha", label: "Catppuccin Mocha", ghosttyName: "Catppuccin Mocha", className: "theme-catppuccin-mocha" },
-  { id: "tokyo-night", label: "Tokyo Night", ghosttyName: "Tokyo Night", className: "theme-tokyo-night" },
-  { id: "nord", label: "Nord", ghosttyName: "Nord", className: "theme-nord" },
-  { id: "gruvbox-dark", label: "Gruvbox Dark", ghosttyName: "Gruvbox Dark", className: "theme-gruvbox-dark" },
-  { id: "dracula", label: "Dracula", ghosttyName: "Dracula", className: "theme-dracula" },
-  { id: "one-dark", label: "One Dark", ghosttyName: "One Dark", className: "theme-one-dark" },
-  {
-    id: "solarized-dark",
-    label: "Solarized Dark",
-    ghosttyName: "Solarized Dark",
-    className: "theme-solarized-dark",
-  },
-  { id: "github-dark", label: "GitHub Dark", ghosttyName: "GitHub Dark", className: "theme-github-dark" },
-  { id: "monokai", label: "Monokai", ghosttyName: "Monokai", className: "theme-monokai" },
-  { id: "light", label: "Classic Light", ghosttyName: "Light", className: "theme-light" },
-];
-
-const FONT_PRESETS: FontPreset[] = [
-  {
-    id: "system-mono",
-    label: "System Mono",
-    family: "\"SFMono-Regular\", \"Cascadia Mono\", \"Consolas\", \"Liberation Mono\", monospace",
-  },
-  {
-    id: "jetbrains",
-    label: "JetBrains Mono",
-    family: "\"JetBrains Mono\", \"SFMono-Regular\", \"Cascadia Mono\", monospace",
-  },
-  {
-    id: "ibm-plex",
-    label: "IBM Plex Mono",
-    family: "\"IBM Plex Mono\", \"SFMono-Regular\", \"Cascadia Mono\", monospace",
-  },
-  {
-    id: "fira-code",
-    label: "Fira Code",
-    family: "\"Fira Code\", \"SFMono-Regular\", \"Cascadia Mono\", monospace",
-  },
-  {
-    id: "source-code-pro",
-    label: "Source Code Pro",
-    family: "\"Source Code Pro\", \"SFMono-Regular\", \"Cascadia Mono\", monospace",
-  },
-  {
-    id: "ui-monospace",
-    label: "UI Monospace",
-    family: "ui-monospace, \"SFMono-Regular\", \"Menlo\", \"Consolas\", monospace",
-  },
-];
-
-const DEFAULT_SETTINGS: Settings = {
-  themeId: "catppuccin-mocha",
-  fontFamilyId: "system-mono",
-  tabLayout: "horizontal",
-  fontSize: 14,
-  lineHeight: 1.22,
-  cursorBlink: true,
-  scrollbackLimit: 10000,
-  debugMode: false,
-  aiProvider: "openai-compatible",
-  aiBaseUrl: "",
-  aiApiKey: "",
-  aiModel: "",
-};
+  DEFAULT_SETTINGS,
+  FONT_EXTENSIONS,
+  FONT_MIME_TYPES,
+  FONT_PRESETS,
+  INITIAL_COLS,
+  INITIAL_ROWS,
+  MAX_FONT_BYTES,
+  STATUS_REFRESH_MS,
+  THEMES,
+} from "./config";
+import { CapabilityService, type Instance } from "./gen/lazycat/webshell/v1/capability_pb";
+import { keyEventToTerminalSequence } from "./keyboard";
+import { loadSettings, saveSettings as persistSettings } from "./settings";
+import { renderShell } from "./shell";
+import type { FontPreset, StoredFont, TerminalPane, TerminalTab, TerminalTheme, Tone } from "./types";
+import { clampNumber, errorMessage, escapeAttr, escapeHtml, newId, qs, selectorLabel } from "./utils";
 
 const transport = createConnectTransport({ baseUrl: window.location.origin });
 const client = createClient(CapabilityService, transport);
@@ -217,202 +32,7 @@ const terminalEncoder = new TextEncoder();
 const params = new URLSearchParams(window.location.search);
 const initialSelector = params.get("name") ?? "";
 
-const app = document.querySelector<HTMLDivElement>("#app");
-if (!app) throw new Error("missing #app");
-
-app.innerHTML = `
-  <main class="webshell" id="webshell" aria-label="Pure Terminal workspace">
-    <header class="topbar" aria-label="Terminal controls">
-      <div class="tabs-shell">
-        <div id="tabList" class="tab-list" role="tablist" aria-label="Terminal tabs"></div>
-        <button class="tab-add" id="newTabButton" type="button" aria-label="New terminal tab" title="New terminal tab">
-          <i data-lucide="plus"></i>
-        </button>
-      </div>
-      <div class="topbar-actions">
-        <div class="instance-switcher" id="instanceSwitcher">
-          <button class="icon-button status-icon" id="instanceButton" type="button" aria-haspopup="listbox" aria-expanded="false" aria-label="Switch instance" title="Switch instance">
-            <span class="status-dot" id="instanceStatusDot" data-status="unknown"></span>
-            <i data-lucide="server"></i>
-            <span id="targetLabel" class="sr-only">No instance selected</span>
-          </button>
-          <div class="switcher-menu" id="instanceMenu" hidden>
-            <div class="menu-head">
-              <span>Instances</span>
-              <button class="icon-button" id="refreshInstances" type="button" aria-label="Refresh instances" title="Refresh instances">
-                <i data-lucide="refresh-cw"></i>
-              </button>
-            </div>
-            <div id="instanceList" class="instance-list" role="listbox" aria-label="Running instances" aria-live="polite"></div>
-          </div>
-        </div>
-        <button class="icon-button" id="humanControl" type="button" aria-label="Request human control" title="Request human control">
-          <i data-lucide="user-round-check"></i>
-        </button>
-        <button class="icon-button" id="splitUp" type="button" aria-label="Split pane up" title="Split pane up">
-          <i data-lucide="panel-top"></i>
-        </button>
-        <button class="icon-button" id="splitDown" type="button" aria-label="Split pane down" title="Split pane down">
-          <i data-lucide="panel-bottom"></i>
-        </button>
-        <button class="icon-button" id="fitTerminal" type="button" aria-label="Focus terminal" title="Focus terminal">
-          <i data-lucide="scan"></i>
-        </button>
-        <button class="icon-button" id="settingsButton" type="button" aria-label="Settings" title="Settings">
-          <i data-lucide="settings"></i>
-        </button>
-      </div>
-    </header>
-
-    <section id="terminalStage" class="terminal-stage" aria-label="Terminal">
-      <div class="empty-state" id="emptyState">
-        <button class="command-button primary icon-only-large" id="emptyNewTab" type="button" aria-label="New terminal tab" title="New terminal tab">
-          <i data-lucide="square-plus"></i>
-        </button>
-        <p id="statusLine">Idle</p>
-      </div>
-    </section>
-
-    <section class="settings-page" id="settingsPage" hidden aria-label="Settings">
-      <header class="settings-header">
-        <div>
-          <h2>Settings</h2>
-        </div>
-        <button class="icon-button" id="closeSettings" type="button" aria-label="Close settings" title="Close settings">
-          <i data-lucide="x"></i>
-        </button>
-      </header>
-
-      <div class="settings-grid">
-        <section class="settings-section">
-          <div class="section-head">
-            <i data-lucide="palette"></i>
-            <div>
-              <h3>Appearance</h3>
-            </div>
-          </div>
-          <label class="field">
-            <span>Theme</span>
-            <select id="themeSelect"></select>
-          </label>
-          <label class="field">
-            <span>Font</span>
-            <select id="fontFamily"></select>
-          </label>
-          <label class="field">
-            <span>Tabs</span>
-            <select id="tabLayout">
-              <option value="horizontal">Horizontal</option>
-              <option value="vertical">Vertical</option>
-            </select>
-          </label>
-          <div class="font-actions">
-            <label class="file-button icon-only-large" aria-label="Upload font" title="Upload font">
-              <input id="fontUpload" type="file" accept=".woff,.woff2,.ttf,.otf,font/woff,font/woff2,font/ttf,font/otf" />
-              <i data-lucide="upload"></i>
-            </label>
-            <button class="command-button icon-only-large" id="removeFont" type="button" aria-label="Remove selected font" title="Remove selected font">
-              <i data-lucide="trash-2"></i>
-            </button>
-          </div>
-          <p id="fontStatus" class="field-status"></p>
-          <label class="field">
-            <span>Font size <output id="fontSizeValue"></output></span>
-            <input id="fontSize" type="range" min="11" max="22" step="1" />
-          </label>
-          <label class="field">
-            <span>Line height <output id="lineHeightValue"></output></span>
-            <input id="lineHeight" type="range" min="1.05" max="1.6" step="0.01" />
-          </label>
-          <label class="field">
-            <span>Scrollback</span>
-            <input id="scrollbackLimit" type="number" min="1000" max="100000" step="1000" />
-          </label>
-          <label class="switch">
-            <input id="cursorBlink" type="checkbox" />
-            <span>Cursor blink</span>
-          </label>
-          <label class="switch">
-            <input id="debugMode" type="checkbox" />
-            <span>Debug adapter</span>
-          </label>
-        </section>
-
-        <section class="settings-section">
-          <div class="section-head">
-            <i data-lucide="bot"></i>
-            <div>
-              <h3>AI Assist</h3>
-            </div>
-          </div>
-          <label class="field">
-            <span>Provider</span>
-            <select id="aiProvider">
-              <option value="openai-compatible">OpenAI compatible</option>
-              <option value="anthropic-compatible">Anthropic compatible</option>
-              <option value="custom">Custom</option>
-            </select>
-          </label>
-          <label class="field">
-            <span>Base URL</span>
-            <input id="aiBaseUrl" type="url" spellcheck="false" placeholder="https://api.example.com/v1" />
-          </label>
-          <label class="field">
-            <span>API key</span>
-            <input id="aiApiKey" type="password" autocomplete="off" spellcheck="false" placeholder="Stored in this browser" />
-          </label>
-          <label class="field">
-            <span>Model</span>
-            <input id="aiModel" type="text" spellcheck="false" placeholder="model id" />
-          </label>
-          <p id="aiStatus" class="field-status">Reserved for AI shell control.</p>
-        </section>
-      </div>
-    </section>
-  </main>
-`;
-
-const elements = {
-  webshell: qs<HTMLElement>("#webshell"),
-  instanceList: qs<HTMLDivElement>("#instanceList"),
-  instanceSwitcher: qs<HTMLDivElement>("#instanceSwitcher"),
-  instanceButton: qs<HTMLButtonElement>("#instanceButton"),
-  instanceMenu: qs<HTMLDivElement>("#instanceMenu"),
-  instanceStatusDot: qs<HTMLSpanElement>("#instanceStatusDot"),
-  refreshInstances: qs<HTMLButtonElement>("#refreshInstances"),
-  newTabButton: qs<HTMLButtonElement>("#newTabButton"),
-  emptyNewTab: qs<HTMLButtonElement>("#emptyNewTab"),
-  statusLine: qs<HTMLParagraphElement>("#statusLine"),
-  targetLabel: qs<HTMLElement>("#targetLabel"),
-  tabList: qs<HTMLDivElement>("#tabList"),
-  terminalStage: qs<HTMLDivElement>("#terminalStage"),
-  emptyState: qs<HTMLDivElement>("#emptyState"),
-  settingsButton: qs<HTMLButtonElement>("#settingsButton"),
-  closeSettings: qs<HTMLButtonElement>("#closeSettings"),
-  settingsPage: qs<HTMLElement>("#settingsPage"),
-  themeSelect: qs<HTMLSelectElement>("#themeSelect"),
-  fontFamily: qs<HTMLSelectElement>("#fontFamily"),
-  tabLayout: qs<HTMLSelectElement>("#tabLayout"),
-  fontUpload: qs<HTMLInputElement>("#fontUpload"),
-  removeFont: qs<HTMLButtonElement>("#removeFont"),
-  fontStatus: qs<HTMLElement>("#fontStatus"),
-  fontSize: qs<HTMLInputElement>("#fontSize"),
-  fontSizeValue: qs<HTMLOutputElement>("#fontSizeValue"),
-  lineHeight: qs<HTMLInputElement>("#lineHeight"),
-  lineHeightValue: qs<HTMLOutputElement>("#lineHeightValue"),
-  scrollbackLimit: qs<HTMLInputElement>("#scrollbackLimit"),
-  cursorBlink: qs<HTMLInputElement>("#cursorBlink"),
-  debugMode: qs<HTMLInputElement>("#debugMode"),
-  aiProvider: qs<HTMLSelectElement>("#aiProvider"),
-  aiBaseUrl: qs<HTMLInputElement>("#aiBaseUrl"),
-  aiApiKey: qs<HTMLInputElement>("#aiApiKey"),
-  aiModel: qs<HTMLInputElement>("#aiModel"),
-  aiStatus: qs<HTMLElement>("#aiStatus"),
-  splitUp: qs<HTMLButtonElement>("#splitUp"),
-  splitDown: qs<HTMLButtonElement>("#splitDown"),
-  fitTerminal: qs<HTMLButtonElement>("#fitTerminal"),
-  humanControl: qs<HTMLButtonElement>("#humanControl"),
-};
+const elements = renderShell(qs<HTMLDivElement>("#app"));
 
 let settings = loadSettings();
 let instances: Instance[] = [];
@@ -420,6 +40,7 @@ let selectedSelector = initialSelector;
 let tabs: TerminalTab[] = [];
 let activeTabId: string | undefined;
 let renamingTabId: string | undefined;
+let contextPaneId: string | undefined;
 let customFonts: FontPreset[] = [];
 const loadedFontFaces = new Map<string, FontFace>();
 
@@ -440,49 +61,8 @@ async function init() {
   }
 }
 
-function qs<T extends Element>(selector: string): T {
-  const found = document.querySelector<T>(selector);
-  if (!found) throw new Error(`missing selector ${selector}`);
-  return found;
-}
-
-function loadSettings(): Settings {
-  const raw = localStorage.getItem("pure-terminal.settings");
-  if (!raw) return { ...DEFAULT_SETTINGS };
-  try {
-    return normalizeSettings(JSON.parse(raw) as Partial<Settings>);
-  } catch {
-    return { ...DEFAULT_SETTINGS };
-  }
-}
-
-function normalizeSettings(value: Partial<Settings>): Settings {
-  return {
-    themeId: typeof value.themeId === "string" ? value.themeId : DEFAULT_SETTINGS.themeId,
-    fontFamilyId: typeof value.fontFamilyId === "string" ? value.fontFamilyId : DEFAULT_SETTINGS.fontFamilyId,
-    fontSize: clampNumber(value.fontSize, 11, 22, DEFAULT_SETTINGS.fontSize),
-    lineHeight: clampNumber(value.lineHeight, 1.05, 1.6, DEFAULT_SETTINGS.lineHeight),
-    cursorBlink: value.cursorBlink ?? DEFAULT_SETTINGS.cursorBlink,
-    scrollbackLimit: Math.round(
-      clampNumber(value.scrollbackLimit, 1000, 100000, DEFAULT_SETTINGS.scrollbackLimit),
-    ),
-    tabLayout: value.tabLayout === "vertical" ? "vertical" : DEFAULT_SETTINGS.tabLayout,
-    debugMode: value.debugMode ?? DEFAULT_SETTINGS.debugMode,
-    aiProvider: typeof value.aiProvider === "string" ? value.aiProvider : DEFAULT_SETTINGS.aiProvider,
-    aiBaseUrl: typeof value.aiBaseUrl === "string" ? value.aiBaseUrl : DEFAULT_SETTINGS.aiBaseUrl,
-    aiApiKey: typeof value.aiApiKey === "string" ? value.aiApiKey : DEFAULT_SETTINGS.aiApiKey,
-    aiModel: typeof value.aiModel === "string" ? value.aiModel : DEFAULT_SETTINGS.aiModel,
-  };
-}
-
-function clampNumber(value: unknown, min: number, max: number, fallback: number): number {
-  const number = Number(value);
-  if (!Number.isFinite(number)) return fallback;
-  return Math.min(max, Math.max(min, number));
-}
-
 function saveSettings() {
-  localStorage.setItem("pure-terminal.settings", JSON.stringify(settings));
+  persistSettings(settings);
 }
 
 function renderOptions() {
@@ -541,24 +121,19 @@ function bindSettings() {
     saveSettings();
     applySettings();
   });
+  elements.cursorShape.addEventListener("change", () => {
+    settings.cursorShape = elements.cursorShape.value === "bar" || elements.cursorShape.value === "underline"
+      ? elements.cursorShape.value
+      : "block";
+    saveSettings();
+    applySettings();
+  });
+  elements.copyOnSelect.addEventListener("change", () => {
+    settings.copyOnSelect = elements.copyOnSelect.checked;
+    saveSettings();
+  });
   elements.debugMode.addEventListener("change", () => {
     settings.debugMode = elements.debugMode.checked;
-    saveSettings();
-  });
-  elements.aiProvider.addEventListener("change", () => {
-    settings.aiProvider = elements.aiProvider.value;
-    saveSettings();
-  });
-  elements.aiBaseUrl.addEventListener("change", () => {
-    settings.aiBaseUrl = elements.aiBaseUrl.value.trim();
-    saveSettings();
-  });
-  elements.aiApiKey.addEventListener("change", () => {
-    settings.aiApiKey = elements.aiApiKey.value;
-    saveSettings();
-  });
-  elements.aiModel.addEventListener("change", () => {
-    settings.aiModel = elements.aiModel.value.trim();
     saveSettings();
   });
 }
@@ -568,8 +143,6 @@ function bindActions() {
   elements.newTabButton.addEventListener("click", () => void createSelectedTab());
   elements.emptyNewTab.addEventListener("click", () => void createSelectedTab());
   elements.removeFont.addEventListener("click", () => void removeSelectedFont());
-  elements.splitUp.addEventListener("click", () => void splitActivePane("up"));
-  elements.splitDown.addEventListener("click", () => void splitActivePane("down"));
   elements.fitTerminal.addEventListener("click", () => activePane()?.term?.focus());
   elements.humanControl.addEventListener("click", () => void requestHumanControl());
   elements.settingsButton.addEventListener("click", () => openSettings());
@@ -586,10 +159,19 @@ function bindActions() {
     if (event.target instanceof Node && !elements.instanceSwitcher.contains(event.target)) {
       closeInstanceMenu();
     }
+    if (event.target instanceof Node && !elements.paneMenu.contains(event.target)) {
+      closePaneMenu();
+    }
+  });
+  elements.paneMenu.addEventListener("click", (event) => {
+    const button = event.target instanceof Element ? event.target.closest<HTMLButtonElement>("[data-pane-action]") : null;
+    if (!button) return;
+    void runPaneMenuAction(button.dataset.paneAction ?? "");
   });
   document.addEventListener("keydown", (event) => {
     if (event.key === "Escape") {
       closeInstanceMenu();
+      closePaneMenu();
       closeSettings();
       return;
     }
@@ -631,7 +213,7 @@ function bindActions() {
   });
   document.addEventListener("keydown", (event) => {
     if (shouldIgnoreGlobalTerminalInput(event.target)) return;
-    const sequence = keyEventToTerminalSequence(event);
+    const sequence = keyEventToTerminalSequence(event, Boolean(activePane()?.term?.bridge?.cursorKeysApp()));
     if (!sequence) return;
     if (sendActivePaneInput(sequence)) {
       event.preventDefault();
@@ -663,6 +245,45 @@ function closeInstanceMenu() {
   elements.instanceButton.setAttribute("aria-expanded", "false");
 }
 
+function openPaneMenu(clientX: number, clientY: number, paneId: string) {
+  contextPaneId = paneId;
+  elements.paneMenu.hidden = false;
+  elements.paneMenu.style.left = "0";
+  elements.paneMenu.style.top = "0";
+  updateIcons();
+  requestAnimationFrame(() => {
+    const margin = 8;
+    const rect = elements.paneMenu.getBoundingClientRect();
+    const left = Math.max(margin, Math.min(clientX, window.innerWidth - rect.width - margin));
+    const top = Math.max(margin, Math.min(clientY, window.innerHeight - rect.height - margin));
+    elements.paneMenu.style.left = `${left}px`;
+    elements.paneMenu.style.top = `${top}px`;
+  });
+}
+
+function closePaneMenu() {
+  elements.paneMenu.hidden = true;
+  elements.paneMenu.style.left = "";
+  elements.paneMenu.style.top = "";
+  contextPaneId = undefined;
+}
+
+async function runPaneMenuAction(action: string) {
+  const pane = contextPaneId ? findPaneById(contextPaneId) : activePane();
+  const tab = pane ? tabForPane(pane) : undefined;
+  closePaneMenu();
+  if (tab && pane) {
+    activatePane(tab.id, pane.id);
+  }
+  if (action === "split-up") {
+    await splitActivePane("up");
+  } else if (action === "split-down") {
+    await splitActivePane("down");
+  } else if (action === "copy-selection") {
+    await copySelection(true);
+  }
+}
+
 function applySettings() {
   const theme = currentTheme();
   const font = currentFont();
@@ -680,11 +301,9 @@ function applySettings() {
   elements.lineHeightValue.textContent = settings.lineHeight.toFixed(2);
   elements.scrollbackLimit.value = String(settings.scrollbackLimit);
   elements.cursorBlink.checked = settings.cursorBlink;
+  elements.cursorShape.value = settings.cursorShape;
+  elements.copyOnSelect.checked = settings.copyOnSelect;
   elements.debugMode.checked = settings.debugMode;
-  elements.aiProvider.value = settings.aiProvider;
-  elements.aiBaseUrl.value = settings.aiBaseUrl;
-  elements.aiApiKey.value = settings.aiApiKey;
-  elements.aiModel.value = settings.aiModel;
 
   for (const pane of allPanes()) {
     applyThemeToMount(pane.mount);
@@ -712,6 +331,8 @@ function applyThemeToMount(mount: HTMLElement) {
   if (theme.className) {
     wtermElement.classList.add(theme.className);
   }
+  wtermElement.classList.remove("cursor-shape-block", "cursor-shape-bar", "cursor-shape-underline");
+  wtermElement.classList.add(`cursor-shape-${settings.cursorShape}`);
   wtermElement.classList.toggle("cursor-blink", settings.cursorBlink);
   wtermElement.style.setProperty("--term-font-family", font.family);
   wtermElement.style.setProperty("--term-font-size", `${settings.fontSize}px`);
@@ -945,6 +566,21 @@ function makePane(tab: TerminalTab): TerminalPane {
   mount.setAttribute("role", "group");
   mount.setAttribute("aria-label", `${tab.label} pane`);
   mount.addEventListener("pointerdown", () => activatePane(tab.id, id));
+  mount.addEventListener("contextmenu", (event) => {
+    event.preventDefault();
+    activatePane(tab.id, id);
+    openPaneMenu(event.clientX, event.clientY, id);
+  });
+  mount.addEventListener("mouseup", () => {
+    if (settings.copyOnSelect) {
+      scheduleCopySelection();
+    }
+  });
+  mount.addEventListener("touchend", () => {
+    if (settings.copyOnSelect) {
+      scheduleCopySelection();
+    }
+  });
   applyThemeToMount(mount);
   return {
     id,
@@ -1367,30 +1003,6 @@ function shouldIgnoreGlobalTerminalInput(target: EventTarget | null): boolean {
   return Boolean(target.closest(".wterm textarea"));
 }
 
-function keyEventToTerminalSequence(event: KeyboardEvent): string | undefined {
-  if (event.metaKey || event.altKey) return undefined;
-  if (event.ctrlKey) {
-    if (event.key.length === 1) {
-      const code = event.key.toLowerCase().charCodeAt(0);
-      if (code >= 97 && code <= 122) return String.fromCharCode(code - 96);
-    }
-    if (event.key === "[") return "\x1b";
-    if (event.key === "\\") return "\x1c";
-    if (event.key === "]") return "\x1d";
-    if (event.key === "^") return "\x1e";
-    if (event.key === "_") return "\x1f";
-    if (event.key === " ") return "\x00";
-    return undefined;
-  }
-  const bridge = activePane()?.term?.bridge;
-  const keyMap = bridge?.cursorKeysApp() ? APP_KEYS : NORMAL_KEYS;
-  if (FIXED_KEYS[event.key] || keyMap[event.key]) {
-    return FIXED_KEYS[event.key] ?? keyMap[event.key];
-  }
-  if (event.key.length === 1) return event.key;
-  return undefined;
-}
-
 function activeTab(): TerminalTab | undefined {
   return tabs.find((tab) => tab.id === activeTabId);
 }
@@ -1402,6 +1014,51 @@ function activePane(tab = activeTab()): TerminalPane | undefined {
 
 function allPanes(): TerminalPane[] {
   return tabs.flatMap((tab) => tab.panes);
+}
+
+function findPaneById(id: string): TerminalPane | undefined {
+  return allPanes().find((pane) => pane.id === id);
+}
+
+function tabForPane(pane: TerminalPane): TerminalTab | undefined {
+  return tabs.find((tab) => tab.id === pane.tabId);
+}
+
+function scheduleCopySelection() {
+  requestAnimationFrame(() => void copySelection(false));
+}
+
+async function copySelection(report: boolean): Promise<boolean> {
+  const text = window.getSelection()?.toString() ?? "";
+  if (!text) {
+    if (report) setGlobalStatus("No selection to copy");
+    return false;
+  }
+
+  try {
+    if (navigator.clipboard?.writeText) {
+      await navigator.clipboard.writeText(text);
+    } else {
+      fallbackCopyText(text);
+    }
+    if (report) setGlobalStatus("Selection copied", "ok");
+    return true;
+  } catch (error) {
+    if (report) setGlobalStatus(`Copy failed: ${errorMessage(error)}`, "error");
+    return false;
+  }
+}
+
+function fallbackCopyText(text: string) {
+  const textarea = document.createElement("textarea");
+  textarea.value = text;
+  textarea.setAttribute("readonly", "true");
+  textarea.style.position = "fixed";
+  textarea.style.left = "-9999px";
+  document.body.appendChild(textarea);
+  textarea.select();
+  document.execCommand("copy");
+  textarea.remove();
 }
 
 function tabTone(tab: TerminalTab): Tone {

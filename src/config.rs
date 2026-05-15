@@ -1,0 +1,9 @@
+pub const APP_ID: &str = "cloud.lazycat.webshell.pure-terminal";
+pub const APP_NAME: &str = "Pure Terminal";
+pub const LIGHTOSCTL: &str = "/lzcinit/lightosctl";
+pub const DEFAULT_COLS: u16 = 120;
+pub const DEFAULT_ROWS: u16 = 32;
+pub const MAX_COLS: u16 = 500;
+pub const MAX_ROWS: u16 = 200;
+pub const MAX_FONT_BYTES: usize = 10 * 1024 * 1024;
+pub const DEFAULT_FONT_DIR: &str = "/lzcapp/var/fonts";
