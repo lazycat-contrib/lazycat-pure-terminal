@@ -47,6 +47,7 @@ input {
 
 button {
   cursor: pointer;
+  touch-action: manipulation;
 }
 
 button:disabled {
@@ -339,6 +340,18 @@ input:focus-visible {
   border-radius: 999px;
   background: transparent;
   color: rgba(237, 242, 247, 0.78);
+}
+
+.icon-button {
+  position: relative;
+}
+
+.icon-button::after,
+.tab-add::after,
+.tab-close::after {
+  content: "";
+  position: absolute;
+  inset: -7px;
 }
 
 .tab-add {
@@ -1043,21 +1056,110 @@ output {
 }
 
 @media (max-width: 760px) {
+  :root {
+    --mobile-touch: 40px;
+  }
+
   .topbar {
+    height: 46px;
+    min-height: 46px;
     gap: 6px;
-    padding: 0 6px;
+    padding: 0 8px;
   }
 
   .tab {
-    width: 48px;
+    width: 52px;
+  }
+
+  .tab-main {
+    min-height: var(--mobile-touch);
+  }
+
+  .tab.named {
+    max-width: 150px;
+  }
+
+  .tab.named .tab-main {
+    max-width: 150px;
+  }
+
+  .tab-title {
+    max-width: 104px;
+  }
+
+  .tab-add,
+  .icon-button {
+    width: var(--mobile-touch);
+    height: var(--mobile-touch);
+    min-width: var(--mobile-touch);
+  }
+
+  .tab-close {
+    opacity: 0.72;
+    width: 22px;
+    height: 22px;
   }
 
   .topbar-actions {
     gap: 1px;
   }
 
+  .webshell[data-tab-layout="vertical"] .topbar {
+    width: 48px;
+    min-width: 48px;
+    padding: 7px 4px;
+  }
+
+  .webshell[data-tab-layout="vertical"].has-named-tabs .topbar {
+    width: 136px;
+    min-width: 136px;
+  }
+
+  .webshell[data-tab-layout="vertical"].has-named-tabs .tab-title {
+    max-width: 88px;
+  }
+
+  .webshell[data-tab-layout="vertical"].has-named-tabs .tab-rename {
+    width: 88px;
+  }
+
+  .switcher-menu {
+    position: fixed;
+    top: 52px;
+    right: 8px;
+    left: 8px;
+    width: auto;
+    max-height: min(420px, calc(100dvh - 64px));
+  }
+
   .settings-page {
+    top: 46px;
     width: 100vw;
     border-left: 0;
+    padding: 14px;
+  }
+
+  .webshell[data-tab-layout="vertical"] .settings-page {
+    top: 0;
+    left: 48px;
+    width: calc(100vw - 48px);
+  }
+
+  .webshell[data-tab-layout="vertical"].has-named-tabs .settings-page {
+    left: 136px;
+    width: calc(100vw - 136px);
+  }
+
+  select,
+  input[type="number"],
+  input[type="text"],
+  input[type="url"],
+  input[type="password"] {
+    min-height: 44px;
+    font-size: 16px;
+  }
+
+  .terminal-mount {
+    padding: 7px 8px;
   }
 }

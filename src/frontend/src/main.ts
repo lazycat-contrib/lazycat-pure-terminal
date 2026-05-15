@@ -102,6 +102,47 @@ const FONT_MIME_TYPES = new Set([
   "application/octet-stream",
 ]);
 
+const NORMAL_KEYS: Record<string, string> = {
+  ArrowUp: "\x1b[A",
+  ArrowDown: "\x1b[B",
+  ArrowRight: "\x1b[C",
+  ArrowLeft: "\x1b[D",
+  Home: "\x1b[H",
+  End: "\x1b[F",
+};
+
+const APP_KEYS: Record<string, string> = {
+  ArrowUp: "\x1bOA",
+  ArrowDown: "\x1bOB",
+  ArrowRight: "\x1bOC",
+  ArrowLeft: "\x1bOD",
+  Home: "\x1bOH",
+  End: "\x1bOF",
+};
+
+const FIXED_KEYS: Record<string, string> = {
+  Enter: "\r",
+  Backspace: "\x7f",
+  Tab: "\t",
+  Escape: "\x1b",
+  Insert: "\x1b[2~",
+  Delete: "\x1b[3~",
+  PageUp: "\x1b[5~",
+  PageDown: "\x1b[6~",
+  F1: "\x1bOP",
+  F2: "\x1bOQ",
+  F3: "\x1bOR",
+  F4: "\x1bOS",
+  F5: "\x1b[15~",
+  F6: "\x1b[17~",
+  F7: "\x1b[18~",
+  F8: "\x1b[19~",
+  F9: "\x1b[20~",
+  F10: "\x1b[21~",
+  F11: "\x1b[23~",
+  F12: "\x1b[24~",
+};
+
 const THEMES: TerminalTheme[] = [
   { id: "ghostty", label: "Ghostty Default", ghosttyName: "Ghostty Default" },
   { id: "catppuccin-mocha", label: "Catppuccin Mocha", ghosttyName: "Catppuccin Mocha", className: "theme-catppuccin-mocha" },
@@ -537,6 +578,10 @@ function bindActions() {
     event.stopPropagation();
     toggleInstanceMenu();
   });
+  elements.terminalStage.addEventListener("pointerdown", () => {
+    activePane()?.term?.focus();
+    requestAnimationFrame(() => activePane()?.term?.focus());
+  });
   document.addEventListener("click", (event) => {
     if (event.target instanceof Node && !elements.instanceSwitcher.contains(event.target)) {
       closeInstanceMenu();
@@ -566,6 +611,30 @@ function bindActions() {
     } else if (event.code === "ArrowDown") {
       event.preventDefault();
       void splitActivePane("down");
+    }
+  });
+  document.addEventListener("beforeinput", (event) => {
+    if (shouldIgnoreGlobalTerminalInput(event.target)) return;
+    const data = event.data;
+    if (!data) return;
+    if (sendActivePaneInput(data)) {
+      event.preventDefault();
+    }
+  });
+  document.addEventListener("paste", (event) => {
+    if (shouldIgnoreGlobalTerminalInput(event.target)) return;
+    const text = event.clipboardData?.getData("text");
+    if (!text) return;
+    if (sendActivePaneInput(text)) {
+      event.preventDefault();
+    }
+  });
+  document.addEventListener("keydown", (event) => {
+    if (shouldIgnoreGlobalTerminalInput(event.target)) return;
+    const sequence = keyEventToTerminalSequence(event);
+    if (!sequence) return;
+    if (sendActivePaneInput(sequence)) {
+      event.preventDefault();
     }
   });
 }
@@ -1280,6 +1349,46 @@ function setPaneStatus(pane: TerminalPane, message: string, tone: Tone = "neutra
 function setGlobalStatus(message: string, tone: Tone = "neutral") {
   elements.statusLine.textContent = message;
   elements.statusLine.dataset.tone = tone;
+}
+
+function sendActivePaneInput(data: string): boolean {
+  const pane = activePane();
+  if (!pane || pane.socket?.readyState !== WebSocket.OPEN) {
+    activePane()?.term?.focus();
+    return false;
+  }
+  pane.socket.send(terminalEncoder.encode(data));
+  return true;
+}
+
+function shouldIgnoreGlobalTerminalInput(target: EventTarget | null): boolean {
+  if (!(target instanceof Element)) return false;
+  if (target.closest(".settings-page, .switcher-menu, .topbar, input, textarea, select, button")) return true;
+  return Boolean(target.closest(".wterm textarea"));
+}
+
+function keyEventToTerminalSequence(event: KeyboardEvent): string | undefined {
+  if (event.metaKey || event.altKey) return undefined;
+  if (event.ctrlKey) {
+    if (event.key.length === 1) {
+      const code = event.key.toLowerCase().charCodeAt(0);
+      if (code >= 97 && code <= 122) return String.fromCharCode(code - 96);
+    }
+    if (event.key === "[") return "\x1b";
+    if (event.key === "\\") return "\x1c";
+    if (event.key === "]") return "\x1d";
+    if (event.key === "^") return "\x1e";
+    if (event.key === "_") return "\x1f";
+    if (event.key === " ") return "\x00";
+    return undefined;
+  }
+  const bridge = activePane()?.term?.bridge;
+  const keyMap = bridge?.cursorKeysApp() ? APP_KEYS : NORMAL_KEYS;
+  if (FIXED_KEYS[event.key] || keyMap[event.key]) {
+    return FIXED_KEYS[event.key] ?? keyMap[event.key];
+  }
+  if (event.key.length === 1) return event.key;
+  return undefined;
 }
 
 function activeTab(): TerminalTab | undefined {
