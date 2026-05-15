@@ -1,0 +1,25 @@
+{
+  "name": "lazycat-pure-terminal",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "proto:ts": "buf generate",
+    "build": "npm run proto:ts && vite build",
+    "dev": "npm run proto:ts && vite --host 127.0.0.1"
+  },
+  "dependencies": {
+    "@bufbuild/protobuf": "2.12.0",
+    "@connectrpc/connect": "2.1.1",
+    "@connectrpc/connect-web": "2.1.1",
+    "@wterm/dom": "0.3.0",
+    "@wterm/ghostty": "0.3.0",
+    "lucide": "^0.475.0"
+  },
+  "devDependencies": {
+    "@bufbuild/buf": "1.69.0",
+    "@bufbuild/protoc-gen-es": "2.12.0",
+    "typescript": "^5.9.3",
+    "vite": "^7.2.7"
+  }
+}

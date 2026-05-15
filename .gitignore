@@ -1,0 +1,6 @@
+/target/
+/dist/
+/node_modules/
+/src/frontend/dist/
+/src/frontend/src/gen/
+*.lpk

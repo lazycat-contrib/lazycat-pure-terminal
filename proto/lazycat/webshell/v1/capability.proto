@@ -1,0 +1,168 @@
+edition = "2023";
+
+package lazycat.webshell.v1;
+
+// CapabilityService is the generic control plane for WebShell providers.
+// It intentionally models abstract capabilities and plugin invocations, not
+// concrete tools such as file transfer implementations, SSH clients, or AI
+// providers. Tool-specific behavior belongs in descriptors and opaque payloads.
+service CapabilityService {
+  rpc ListInstances(ListInstancesRequest) returns (ListInstancesResponse);
+  rpc GetProvider(GetProviderRequest) returns (GetProviderResponse);
+  rpc CreateSession(CreateSessionRequest) returns (CreateSessionResponse);
+  rpc CloseSession(CloseSessionRequest) returns (CloseSessionResponse);
+  rpc ListSessions(ListSessionsRequest) returns (ListSessionsResponse);
+  rpc ListPlugins(ListPluginsRequest) returns (ListPluginsResponse);
+  rpc ConfigurePlugin(ConfigurePluginRequest) returns (ConfigurePluginResponse);
+  rpc InvokePlugin(InvokePluginRequest) returns (InvokePluginResponse);
+  rpc RequestControl(RequestControlRequest) returns (RequestControlResponse);
+  rpc ReleaseControl(ReleaseControlRequest) returns (ReleaseControlResponse);
+}
+
+message ListInstancesRequest {}
+
+message ListInstancesResponse {
+  repeated Instance instances = 1;
+}
+
+message Instance {
+  string selector = 1;
+  string name = 2;
+  string owner_deploy_id = 3;
+  string status = 4;
+}
+
+message GetProviderRequest {}
+
+message GetProviderResponse {
+  ProviderDescriptor provider = 1;
+}
+
+message ProviderDescriptor {
+  string id = 1;
+  string display_name = 2;
+  string version = 3;
+  repeated Capability capabilities = 4;
+}
+
+message Capability {
+  string id = 1;
+  string kind = 2;
+  string display_name = 3;
+  string description = 4;
+  repeated string transports = 5;
+  string schema_json = 6;
+}
+
+message CreateSessionRequest {
+  string selector = 1;
+  int32 cols = 2;
+  int32 rows = 3;
+  map<string, string> metadata = 4;
+}
+
+message CreateSessionResponse {
+  Session session = 1;
+}
+
+message Session {
+  string id = 1;
+  string selector = 2;
+  string status = 3;
+  int32 cols = 4;
+  int32 rows = 5;
+  ControlLease control = 6;
+  map<string, string> metadata = 7;
+}
+
+message CloseSessionRequest {
+  string session_id = 1;
+}
+
+message CloseSessionResponse {
+  string session_id = 1;
+  string status = 2;
+}
+
+message ListSessionsRequest {
+  string selector = 1;
+}
+
+message ListSessionsResponse {
+  repeated Session sessions = 1;
+}
+
+message ListPluginsRequest {}
+
+message ListPluginsResponse {
+  repeated PluginDescriptor plugins = 1;
+}
+
+message PluginDescriptor {
+  string id = 1;
+  string kind = 2;
+  string display_name = 3;
+  string description = 4;
+  repeated string scopes = 5;
+  repeated string accepted_content_types = 6;
+  repeated string produced_content_types = 7;
+  string input_schema_json = 8;
+  string output_schema_json = 9;
+  bool enabled = 10;
+  map<string, string> metadata = 11;
+}
+
+message ConfigurePluginRequest {
+  string plugin_id = 1;
+  bool enabled = 2;
+  map<string, string> metadata = 3;
+}
+
+message ConfigurePluginResponse {
+  PluginDescriptor plugin = 1;
+}
+
+message InvokePluginRequest {
+  string plugin_id = 1;
+  string session_id = 2;
+  string operation = 3;
+  string content_type = 4;
+  bytes payload = 5;
+  map<string, string> metadata = 6;
+}
+
+message InvokePluginResponse {
+  string invocation_id = 1;
+  string status = 2;
+  string content_type = 3;
+  bytes payload = 4;
+  map<string, string> metadata = 5;
+}
+
+message RequestControlRequest {
+  string session_id = 1;
+  string actor_id = 2;
+  string actor_kind = 3;
+  string reason = 4;
+}
+
+message RequestControlResponse {
+  ControlLease lease = 1;
+}
+
+message ReleaseControlRequest {
+  string session_id = 1;
+  string lease_id = 2;
+}
+
+message ReleaseControlResponse {
+  string session_id = 1;
+  string status = 2;
+}
+
+message ControlLease {
+  string lease_id = 1;
+  string actor_id = 2;
+  string actor_kind = 3;
+  string status = 4;
+}

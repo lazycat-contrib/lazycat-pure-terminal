@@ -1,0 +1,15 @@
+icon: ./icon.png
+buildscript: |
+  set -eu
+  CONTENT_DIR="./dist/content"
+  rm -rf "$CONTENT_DIR"
+  mkdir -p "$CONTENT_DIR/static"
+  npm ci
+  npm run build
+  cargo build --release
+  cp target/release/lazycat-pure-terminal "$CONTENT_DIR/lazycat-pure-terminal"
+  cp -R src/frontend/dist/. "$CONTENT_DIR/static/"
+contentdir: ./dist/content
+resource_exports:
+  - kind: lightos.webshell
+    source: ./resources/lightos.webshell
