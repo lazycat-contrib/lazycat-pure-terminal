@@ -20,7 +20,7 @@ import {
 } from "./config";
 import { CapabilityService, type Instance, type Session } from "./gen/lazycat/webshell/v1/capability_pb";
 import { translate, type MessageKey } from "./i18n";
-import { keyEventToTerminalSequence } from "./keyboard";
+import { keyEventToTerminalSequence, shouldHandleTerminalKeyDown } from "./keyboard";
 import { loadSettings, saveSettings as persistSettings } from "./settings";
 import { renderShell } from "./shell";
 import type { FontPreset, SplitAxis, SplitNode, SplitPlacement, StoredFont, TerminalPane, TerminalTab, TerminalTheme, Tone } from "./types";
@@ -632,7 +632,7 @@ async function restoreSessions() {
       const selector = group.sessions[0]?.selector;
       if (!selector) continue;
       const tab = makeTab(selector, group.tabId);
-      tab.customTitle = group.title || group.host;
+      tab.customTitle = group.title;
       tabs = [...tabs, tab];
       elements.terminalStage.appendChild(tab.mount);
       for (const session of group.sessions.sort(comparePanesForRestore)) {
@@ -701,7 +701,12 @@ function sessionTabKey(session: Session): string {
 }
 
 function sessionTabTitle(session: Session): string | undefined {
-  return session.metadata.tabTitle?.trim() || undefined;
+  const title = session.metadata.tabTitle?.trim();
+  if (!title) return undefined;
+  const explicit = session.metadata.tabCustomTitle?.trim().toLowerCase();
+  if (explicit === "true") return title;
+  if (explicit === "false") return undefined;
+  return title === sessionHost(session) ? undefined : title;
 }
 
 function compareSessionsForRestore(left: Session, right: Session): number {
@@ -775,18 +780,7 @@ function makePane(tab: TerminalTab): TerminalPane {
     activatePane(current.tabId, id);
     openPaneMenu(event.clientX, event.clientY, id);
   });
-  mount.addEventListener("mouseup", () => {
-    if (settings.copyOnSelect) {
-      scheduleCopySelection();
-    }
-  });
-  mount.addEventListener("touchend", () => {
-    if (settings.copyOnSelect) {
-      scheduleCopySelection();
-    }
-  });
-  applyThemeToMount(mount);
-  return {
+  const pane: TerminalPane = {
     id,
     tabId: tab.id,
     selector: tab.selector,
@@ -802,6 +796,19 @@ function makePane(tab: TerminalTab): TerminalPane {
     cols: INITIAL_COLS,
     rows: INITIAL_ROWS,
   };
+  mount.addEventListener("keydown", (event) => handleTerminalKeyDown(pane, event), true);
+  mount.addEventListener("mouseup", () => {
+    if (settings.copyOnSelect) {
+      scheduleCopySelection();
+    }
+  });
+  mount.addEventListener("touchend", () => {
+    if (settings.copyOnSelect) {
+      scheduleCopySelection();
+    }
+  });
+  applyThemeToMount(mount);
+  return pane;
 }
 
 async function createPane(tab: TerminalTab, placement: SplitPlacement) {
@@ -824,6 +831,7 @@ async function createPane(tab: TerminalTab, placement: SplitPlacement) {
         tabId: tab.id,
         paneId: pane.id,
         tabTitle: tab.customTitle?.trim() ?? "",
+        tabCustomTitle: String(Boolean(tab.customTitle?.trim())),
         tabOrder: String(tabOrder(tab)),
         paneOrder: String(paneOrder(tab, pane)),
         split: placement,
@@ -1001,6 +1009,7 @@ function openSocket(pane: TerminalPane) {
   url.searchParams.set("tab_id", pane.tabId);
   url.searchParams.set("pane_id", pane.id);
   url.searchParams.set("tab_title", tabForPane(pane)?.customTitle?.trim() ?? "");
+  url.searchParams.set("tab_custom_title", String(Boolean(tabForPane(pane)?.customTitle?.trim())));
   url.searchParams.set("tab_order", String(tabOrder(tabForPane(pane))));
   url.searchParams.set("pane_order", String(paneOrder(tabForPane(pane), pane)));
 
@@ -1046,8 +1055,10 @@ function syncPanePlacement(pane: TerminalPane) {
     const title = tab?.customTitle?.trim() ?? "";
     if (title) {
       pane.session.metadata.tabTitle = title;
+      pane.session.metadata.tabCustomTitle = "true";
     } else {
       delete pane.session.metadata.tabTitle;
+      pane.session.metadata.tabCustomTitle = "false";
     }
   }
   sendPanePlacement(pane);
@@ -1067,6 +1078,7 @@ function sendPanePlacement(pane: TerminalPane) {
     tab_id: pane.tabId,
     pane_id: pane.id,
     tab_title: tab?.customTitle?.trim() ?? "",
+    tab_custom_title: String(Boolean(tab?.customTitle?.trim())),
     tab_order: String(tabOrder(tab)),
     pane_order: String(paneOrder(tab, pane)),
   }));
@@ -1416,12 +1428,32 @@ function setGlobalStatus(message: string, tone: Tone = "neutral") {
 
 function sendActivePaneInput(data: string): boolean {
   const pane = activePane();
+  return Boolean(pane && sendPaneInput(pane, data));
+}
+
+function sendPaneInput(pane: TerminalPane, data: string): boolean {
   if (!pane || pane.socket?.readyState !== WebSocket.OPEN) {
     activePane()?.term?.focus();
     return false;
   }
   pane.socket.send(terminalEncoder.encode(data));
   return true;
+}
+
+function handleTerminalKeyDown(pane: TerminalPane, event: KeyboardEvent) {
+  if (!shouldHandleTerminalKeyDown(event) || shouldLetBrowserHandleTerminalKey(event)) return;
+  const sequence = keyEventToTerminalSequence(event, Boolean(pane.term?.bridge?.cursorKeysApp()));
+  if (!sequence) return;
+  event.preventDefault();
+  event.stopPropagation();
+  event.stopImmediatePropagation();
+  sendPaneInput(pane, sequence);
+}
+
+function shouldLetBrowserHandleTerminalKey(event: KeyboardEvent): boolean {
+  const key = event.key.toLowerCase();
+  if ((event.ctrlKey || event.metaKey) && key === "c" && window.getSelection()?.toString()) return true;
+  return (event.ctrlKey || event.metaKey) && key === "v";
 }
 
 function shouldIgnoreGlobalTerminalInput(target: EventTarget | null): boolean {

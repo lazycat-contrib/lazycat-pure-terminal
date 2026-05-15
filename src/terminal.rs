@@ -31,6 +31,7 @@ pub struct TerminalQuery {
     tab_id: Option<String>,
     pane_id: Option<String>,
     tab_title: Option<String>,
+    tab_custom_title: Option<String>,
     tab_order: Option<String>,
     pane_order: Option<String>,
 }
@@ -52,6 +53,7 @@ enum TerminalClientMessage {
         tab_id: String,
         pane_id: String,
         tab_title: Option<String>,
+        tab_custom_title: Option<String>,
         tab_order: Option<String>,
         pane_order: Option<String>,
     },
@@ -87,6 +89,7 @@ struct SessionPlacement<'a> {
     tab_id: Option<&'a str>,
     pane_id: Option<&'a str>,
     tab_title: Option<&'a str>,
+    tab_custom_title: Option<&'a str>,
     tab_order: Option<&'a str>,
     pane_order: Option<&'a str>,
 }
@@ -230,6 +233,7 @@ fn handle_terminal_control_message(
             tab_id,
             pane_id,
             tab_title,
+            tab_custom_title,
             tab_order,
             pane_order,
         }) => {
@@ -240,6 +244,7 @@ fn handle_terminal_control_message(
                     tab_id: Some(&tab_id),
                     pane_id: Some(&pane_id),
                     tab_title: tab_title.as_deref(),
+                    tab_custom_title: tab_custom_title.as_deref(),
                     tab_order: tab_order.as_deref(),
                     pane_order: pane_order.as_deref(),
                 },
@@ -306,6 +311,7 @@ fn resolve_terminal_target(
                     tab_id: query.tab_id.as_deref(),
                     pane_id: query.pane_id.as_deref(),
                     tab_title: query.tab_title.as_deref(),
+                    tab_custom_title: query.tab_custom_title.as_deref(),
                     tab_order: query.tab_order.as_deref(),
                     pane_order: query.pane_order.as_deref(),
                 },
@@ -404,6 +410,7 @@ fn apply_session_placement(
     changed |= set_metadata_value(metadata, "tabId", placement.tab_id);
     changed |= set_metadata_value(metadata, "paneId", placement.pane_id);
     changed |= set_clearable_metadata_value(metadata, "tabTitle", placement.tab_title);
+    changed |= set_metadata_value(metadata, "tabCustomTitle", placement.tab_custom_title);
     changed |= set_metadata_value(metadata, "tabOrder", placement.tab_order);
     changed |= set_metadata_value(metadata, "paneOrder", placement.pane_order);
     changed
@@ -504,6 +511,7 @@ mod tests {
                 tab_id: Some("tab-1"),
                 pane_id: Some("pane-2"),
                 tab_title: Some(" Build "),
+                tab_custom_title: Some("true"),
                 tab_order: Some("3"),
                 pane_order: Some("1"),
             },
@@ -513,6 +521,10 @@ mod tests {
         assert_eq!(metadata.get("tabId").map(String::as_str), Some("tab-1"));
         assert_eq!(metadata.get("paneId").map(String::as_str), Some("pane-2"));
         assert_eq!(metadata.get("tabTitle").map(String::as_str), Some("Build"));
+        assert_eq!(
+            metadata.get("tabCustomTitle").map(String::as_str),
+            Some("true")
+        );
         assert_eq!(metadata.get("tabOrder").map(String::as_str), Some("3"));
         assert_eq!(metadata.get("paneOrder").map(String::as_str), Some("1"));
     }
