@@ -24,7 +24,7 @@ import { keyEventToTerminalSequence } from "./keyboard";
 import { loadSettings, saveSettings as persistSettings } from "./settings";
 import { renderShell } from "./shell";
 import type { FontPreset, SplitPlacement, StoredFont, TerminalPane, TerminalTab, TerminalTheme, Tone } from "./types";
-import { clampNumber, errorMessage, escapeAttr, escapeHtml, newId, selectorLabel } from "./utils";
+import { clampNumber, errorMessage, escapeAttr, escapeHtml, newId, qs, selectorLabel } from "./utils";
 
 const transport = createConnectTransport({ baseUrl: window.location.origin });
 const client = createClient(CapabilityService, transport);

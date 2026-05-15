@@ -1,11 +1,12 @@
 {
   "name": "lazycat-pure-terminal",
-  "version": "0.1.4",
+  "version": "0.1.5",
   "private": true,
   "type": "module",
   "scripts": {
     "proto:ts": "buf generate",
-    "build": "npm run proto:ts && vite build",
+    "typecheck": "tsc --noEmit",
+    "build": "npm run proto:ts && npm run typecheck && vite build",
     "dev": "npm run proto:ts && vite --host 127.0.0.1"
   },
   "dependencies": {
