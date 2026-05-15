@@ -9,7 +9,6 @@ export type MessageKey =
   | "action.newTab"
   | "action.refreshInstances"
   | "action.removeFont"
-  | "action.requestHumanControl"
   | "action.settings"
   | "action.closeTab"
   | "action.renameTab"
@@ -48,9 +47,6 @@ export type MessageKey =
   | "status.closed"
   | "status.connected"
   | "status.connectFailed"
-  | "status.controlFailed"
-  | "status.controlReady"
-  | "status.connectSessionFirst"
   | "status.copyFailed"
   | "status.creatingSession"
   | "status.fontDeleteFailed"
@@ -60,7 +56,6 @@ export type MessageKey =
   | "status.fontRegistrationFailed"
   | "status.fontRemoved"
   | "status.fontUploadFailed"
-  | "status.humanControlActive"
   | "status.idle"
   | "status.instance"
   | "status.instanceLoadFailed"
@@ -92,7 +87,6 @@ const messages: Record<Language, Record<MessageKey, string>> = {
     "action.newTab": "New terminal tab",
     "action.refreshInstances": "Refresh instances",
     "action.removeFont": "Remove selected font",
-    "action.requestHumanControl": "Request human control",
     "action.settings": "Settings",
     "action.closeTab": "Close tab",
     "action.renameTab": "Rename tab",
@@ -131,9 +125,6 @@ const messages: Record<Language, Record<MessageKey, string>> = {
     "status.closed": "Closed",
     "status.connected": "Connected",
     "status.connectFailed": "Connect failed: {message}",
-    "status.controlFailed": "Control request failed: {message}",
-    "status.controlReady": "human ready",
-    "status.connectSessionFirst": "Connect a session first.",
     "status.copyFailed": "Copy failed: {message}",
     "status.creatingSession": "Creating session...",
     "status.fontDeleteFailed": "Font delete failed: {message}",
@@ -143,7 +134,6 @@ const messages: Record<Language, Record<MessageKey, string>> = {
     "status.fontRegistrationFailed": "font registration failed",
     "status.fontRemoved": "{name} removed",
     "status.fontUploadFailed": "Font upload failed: {message}",
-    "status.humanControlActive": "Human control lease active",
     "status.idle": "Idle",
     "status.instance": "Instance",
     "status.instanceLoadFailed": "Instance load failed: {message}",
@@ -174,7 +164,6 @@ const messages: Record<Language, Record<MessageKey, string>> = {
     "action.newTab": "新建终端标签",
     "action.refreshInstances": "刷新实例",
     "action.removeFont": "移除当前字体",
-    "action.requestHumanControl": "请求人工控制",
     "action.settings": "设置",
     "action.closeTab": "关闭标签",
     "action.renameTab": "重命名标签",
@@ -213,9 +202,6 @@ const messages: Record<Language, Record<MessageKey, string>> = {
     "status.closed": "已关闭",
     "status.connected": "已连接",
     "status.connectFailed": "连接失败：{message}",
-    "status.controlFailed": "控制请求失败：{message}",
-    "status.controlReady": "人工就绪",
-    "status.connectSessionFirst": "请先连接一个会话。",
     "status.copyFailed": "复制失败：{message}",
     "status.creatingSession": "正在创建会话...",
     "status.fontDeleteFailed": "字体删除失败：{message}",
@@ -225,7 +211,6 @@ const messages: Record<Language, Record<MessageKey, string>> = {
     "status.fontRegistrationFailed": "字体注册失败",
     "status.fontRemoved": "{name} 已移除",
     "status.fontUploadFailed": "字体上传失败：{message}",
-    "status.humanControlActive": "人工控制租约已生效",
     "status.idle": "空闲",
     "status.instance": "实例",
     "status.instanceLoadFailed": "实例加载失败：{message}",

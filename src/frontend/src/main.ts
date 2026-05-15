@@ -173,7 +173,6 @@ function bindActions() {
   elements.emptyNewTab.addEventListener("click", () => void createSelectedTab());
   elements.removeFont.addEventListener("click", () => void removeSelectedFont());
   elements.fitTerminal.addEventListener("click", () => activePane()?.term?.focus());
-  elements.humanControl.addEventListener("click", () => void requestHumanControl());
   elements.settingsButton.addEventListener("click", () => openSettings());
   elements.closeSettings.addEventListener("click", () => closeSettings());
   elements.instanceButton.addEventListener("click", (event) => {
@@ -633,7 +632,6 @@ function makePane(tab: TerminalTab): TerminalPane {
     title: tab.label,
     status: tr("status.idle"),
     tone: "neutral",
-    controlState: tr("status.controlReady"),
     mount,
     reconnectDelay: 1000,
     closing: false,
@@ -975,26 +973,6 @@ function closeTab(tabId: string) {
     renderTabs();
     updateActiveDetails();
     setGlobalStatus(tr("status.closed"));
-  }
-}
-
-async function requestHumanControl() {
-  const pane = activePane();
-  if (!pane?.session?.id) {
-    setGlobalStatus(tr("status.connectSessionFirst"), "error");
-    return;
-  }
-  try {
-    const response = await client.requestControl({
-      sessionId: pane.session.id,
-      actorId: "human",
-      actorKind: "human",
-      reason: "manual operation",
-    });
-    pane.controlState = `${response.lease?.actorKind ?? "human"} active`;
-    setPaneStatus(pane, tr("status.humanControlActive"), "ok");
-  } catch (error) {
-    setPaneStatus(pane, tr("status.controlFailed", { message: errorMessage(error) }), "error");
   }
 }
 

@@ -36,7 +36,6 @@ export type ShellElements = {
   debugMode: HTMLInputElement;
   paneMenu: HTMLDivElement;
   fitTerminal: HTMLButtonElement;
-  humanControl: HTMLButtonElement;
 };
 
 export function renderShell(app: HTMLElement): ShellElements {
@@ -66,9 +65,6 @@ export function renderShell(app: HTMLElement): ShellElements {
               <div id="instanceList" class="instance-list" role="listbox" aria-label="Running instances" aria-live="polite"></div>
             </div>
           </div>
-          <button class="icon-button" id="humanControl" type="button" aria-label="Request human control" title="Request human control" data-i18n-aria="action.requestHumanControl" data-i18n-title="action.requestHumanControl">
-            <i data-lucide="user-round-check"></i>
-          </button>
           <button class="icon-button" id="fitTerminal" type="button" aria-label="Focus terminal" title="Focus terminal" data-i18n-aria="action.focusTerminal" data-i18n-title="action.focusTerminal">
             <i data-lucide="scan"></i>
           </button>
@@ -235,6 +231,5 @@ export function renderShell(app: HTMLElement): ShellElements {
     debugMode: qs<HTMLInputElement>("#debugMode"),
     paneMenu: qs<HTMLDivElement>("#paneMenu"),
     fitTerminal: qs<HTMLButtonElement>("#fitTerminal"),
-    humanControl: qs<HTMLButtonElement>("#humanControl"),
   };
 }

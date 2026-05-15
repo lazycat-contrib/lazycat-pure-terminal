@@ -58,7 +58,6 @@ export type TerminalPane = {
   title: string;
   status: string;
   tone: Tone;
-  controlState: string;
   mount: HTMLDivElement;
   session?: Session;
   term?: WTerm;
