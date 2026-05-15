@@ -23,7 +23,7 @@ import { translate, type MessageKey } from "./i18n";
 import { keyEventToTerminalSequence } from "./keyboard";
 import { loadSettings, saveSettings as persistSettings } from "./settings";
 import { renderShell } from "./shell";
-import type { FontPreset, SplitPlacement, StoredFont, TerminalPane, TerminalTab, TerminalTheme, Tone } from "./types";
+import type { FontPreset, SplitAxis, SplitNode, SplitPlacement, StoredFont, TerminalPane, TerminalTab, TerminalTheme, Tone } from "./types";
 import { clampNumber, errorMessage, escapeAttr, escapeHtml, newId, qs, selectorLabel } from "./utils";
 
 const transport = createConnectTransport({ baseUrl: window.location.origin });
@@ -594,7 +594,6 @@ function makeTab(selector: string): TerminalTab {
     label: selectorLabel(selector),
     mount,
     panes: [],
-    splitAxis: "rows",
     closing: false,
   };
 }
@@ -643,13 +642,8 @@ function makePane(tab: TerminalTab): TerminalPane {
 async function createPane(tab: TerminalTab, placement: SplitPlacement) {
   const pane = makePane(tab);
   const referencePane = activePane(tab);
-  const referenceIndex = referencePane ? tab.panes.findIndex((item) => item.id === referencePane.id) : -1;
-  tab.splitAxis = placement === "left" || placement === "right" ? "columns" : "rows";
-  const insertBefore = placement === "up" || placement === "left";
-  const insertIndex = referenceIndex < 0 ? tab.panes.length : insertBefore ? referenceIndex : referenceIndex + 1;
-  tab.panes.splice(insertIndex, 0, pane);
-  const nextSibling = tab.mount.children[insertIndex] ?? null;
-  tab.mount.insertBefore(pane.mount, nextSibling);
+  tab.panes.push(pane);
+  tab.layout = nextPaneLayout(tab.layout, referencePane?.id, pane.id, placement);
   tab.activePaneId = pane.id;
   renderPaneLayout(tab);
   activatePane(tab.id, pane.id, { focus: false });
@@ -681,13 +675,96 @@ async function splitActivePane(placement: SplitPlacement) {
 }
 
 function renderPaneLayout(tab: TerminalTab) {
-  const paneCount = Math.max(1, tab.panes.length);
-  const rowTemplate = `repeat(${paneCount}, minmax(0, 1fr))`;
-  const columnTemplate = `repeat(${paneCount}, minmax(260px, 1fr))`;
-  tab.mount.dataset.splitAxis = tab.splitAxis;
-  tab.mount.style.gridTemplateRows = tab.splitAxis === "rows" ? rowTemplate : "";
-  tab.mount.style.gridTemplateColumns = tab.splitAxis === "columns" ? columnTemplate : "";
+  tab.mount.replaceChildren();
+  if (tab.layout) {
+    tab.mount.appendChild(renderSplitNode(tab, tab.layout));
+  }
   updatePaneActiveState(tab);
+}
+
+function nextPaneLayout(
+  layout: SplitNode | undefined,
+  referencePaneId: string | undefined,
+  newPaneId: string,
+  placement: SplitPlacement,
+): SplitNode {
+  const newPane = paneLayoutNode(newPaneId);
+  if (!layout || !referencePaneId) return newPane;
+
+  const axis = splitAxisForPlacement(placement);
+  const insertBefore = placement === "up" || placement === "left";
+  const result = insertPaneIntoLayout(layout, referencePaneId, newPane, axis, insertBefore);
+  if (result.inserted) return result.node;
+
+  return {
+    type: "split",
+    axis,
+    children: insertBefore ? [newPane, layout] : [layout, newPane],
+  };
+}
+
+function insertPaneIntoLayout(
+  node: SplitNode,
+  referencePaneId: string,
+  newPane: SplitNode,
+  axis: SplitAxis,
+  insertBefore: boolean,
+): { node: SplitNode; inserted: boolean } {
+  if (node.type === "pane") {
+    if (node.paneId !== referencePaneId) return { node, inserted: false };
+    return {
+      node: {
+        type: "split",
+        axis,
+        children: insertBefore ? [newPane, node] : [node, newPane],
+      },
+      inserted: true,
+    };
+  }
+
+  let inserted = false;
+  const children = node.children.map((child) => {
+    if (inserted) return child;
+    const result = insertPaneIntoLayout(child, referencePaneId, newPane, axis, insertBefore);
+    inserted = result.inserted;
+    return result.node;
+  });
+
+  return {
+    node: inserted ? { ...node, children } : node,
+    inserted,
+  };
+}
+
+function renderSplitNode(tab: TerminalTab, node: SplitNode): HTMLElement {
+  if (node.type === "pane") {
+    const pane = tab.panes.find((item) => item.id === node.paneId);
+    return pane?.mount ?? missingPaneElement(node.paneId);
+  }
+
+  const container = document.createElement("div");
+  container.className = "split-container";
+  container.dataset.splitAxis = node.axis;
+  container.style.setProperty("--split-count", String(Math.max(1, node.children.length)));
+  for (const child of node.children) {
+    container.appendChild(renderSplitNode(tab, child));
+  }
+  return container;
+}
+
+function paneLayoutNode(paneId: string): SplitNode {
+  return { type: "pane", paneId };
+}
+
+function splitAxisForPlacement(placement: SplitPlacement): SplitAxis {
+  return placement === "left" || placement === "right" ? "columns" : "rows";
+}
+
+function missingPaneElement(paneId: string): HTMLElement {
+  const element = document.createElement("div");
+  element.className = "terminal-mount missing-pane";
+  element.dataset.paneId = paneId;
+  return element;
 }
 
 function updatePaneActiveState(tab: TerminalTab) {

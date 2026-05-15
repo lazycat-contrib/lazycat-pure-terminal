@@ -631,9 +631,10 @@ input:focus-visible {
 .tab-mount {
   position: absolute;
   inset: 0;
-  display: grid;
+  display: block;
   min-height: 0;
   background: var(--term-bg, #050a12);
+  overflow: hidden;
   pointer-events: none;
   visibility: hidden;
 }
@@ -645,29 +646,47 @@ input:focus-visible {
 
 .terminal-mount {
   position: relative;
+  width: 100%;
+  height: 100%;
   min-height: 0;
   min-width: 0;
   padding: 8px 10px;
-  border-top: 1px solid rgba(148, 163, 184, 0.14);
+  border: 0;
   background: var(--term-bg, #050a12);
   overflow: hidden;
 }
 
-.terminal-mount:first-child {
+.split-container {
+  display: grid;
+  width: 100%;
+  height: 100%;
+  min-width: 0;
+  min-height: 0;
+  background: var(--term-bg, #050a12);
+  overflow: hidden;
+}
+
+.split-container[data-split-axis="rows"] {
+  grid-template-rows: repeat(var(--split-count), minmax(0, 1fr));
+}
+
+.split-container[data-split-axis="columns"] {
+  grid-template-columns: repeat(var(--split-count), minmax(0, 1fr));
+}
+
+.split-container[data-split-axis="rows"] > :where(.terminal-mount, .split-container) {
+  border-top: 1px solid rgba(148, 163, 184, 0.14);
+}
+
+.split-container[data-split-axis="rows"] > :where(.terminal-mount, .split-container):first-child {
   border-top: 0;
 }
 
-.tab-mount[data-split-axis="columns"] {
-  overflow-x: auto;
-  overflow-y: hidden;
-}
-
-.tab-mount[data-split-axis="columns"] .terminal-mount {
-  border-top: 0;
+.split-container[data-split-axis="columns"] > :where(.terminal-mount, .split-container) {
   border-left: 1px solid rgba(148, 163, 184, 0.14);
 }
 
-.tab-mount[data-split-axis="columns"] .terminal-mount:first-child {
+.split-container[data-split-axis="columns"] > :where(.terminal-mount, .split-container):first-child {
   border-left: 0;
 }
 

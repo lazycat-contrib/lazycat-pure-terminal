@@ -9,6 +9,19 @@ export type SplitPlacement = "up" | "down" | "left" | "right";
 export type SplitAxis = "rows" | "columns";
 export type LocaleSetting = "auto" | "en" | "zh-CN";
 
+export type SplitPaneNode = {
+  type: "pane";
+  paneId: string;
+};
+
+export type SplitContainerNode = {
+  type: "split";
+  axis: SplitAxis;
+  children: SplitNode[];
+};
+
+export type SplitNode = SplitPaneNode | SplitContainerNode;
+
 export type TerminalTheme = {
   id: string;
   label: string;
@@ -77,6 +90,6 @@ export type TerminalTab = {
   mount: HTMLDivElement;
   panes: TerminalPane[];
   activePaneId?: string;
-  splitAxis: SplitAxis;
+  layout?: SplitNode;
   closing: boolean;
 };
