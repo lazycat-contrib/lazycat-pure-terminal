@@ -1,4 +1,5 @@
-import type { WTerm } from "@wterm/dom";
+import type { ResttyFontSource } from "restty";
+import type { Terminal } from "restty/xterm";
 
 import type { Session } from "./gen/lazycat/webshell/v1/capability_pb";
 
@@ -26,6 +27,7 @@ export type TerminalTheme = {
   id: string;
   label: string;
   ghosttyName: string;
+  ghosttySource?: string;
   className?: string;
 };
 
@@ -33,6 +35,7 @@ export type FontPreset = {
   id: string;
   label: string;
   family: string;
+  resttySources?: ResttyFontSource[];
   custom?: boolean;
 };
 
@@ -74,8 +77,10 @@ export type TerminalPane = {
   tone: Tone;
   mount: HTMLDivElement;
   session?: Session;
-  term?: WTerm;
+  term?: Terminal;
   socket?: WebSocket;
+  decoder?: TextDecoder;
+  titleBuffer: string;
   reconnectTimer?: number;
   reconnectDelay: number;
   connectedOnce: boolean;

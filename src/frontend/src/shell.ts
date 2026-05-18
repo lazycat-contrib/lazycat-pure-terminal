@@ -14,7 +14,9 @@ export type ShellElements = {
   targetLabel: HTMLElement;
   tabList: HTMLDivElement;
   terminalStage: HTMLDivElement;
+  mobileShortcuts: HTMLDivElement;
   emptyState: HTMLDivElement;
+  homeButton: HTMLButtonElement;
   settingsButton: HTMLButtonElement;
   closeSettings: HTMLButtonElement;
   settingsPage: HTMLElement;
@@ -69,6 +71,9 @@ export function renderShell(app: HTMLElement): ShellElements {
           <button class="icon-button" id="fitTerminal" type="button" aria-label="Focus terminal" title="Focus terminal" data-i18n-aria="action.focusTerminal" data-i18n-title="action.focusTerminal">
             <i data-lucide="scan"></i>
           </button>
+          <button class="icon-button" id="homeButton" type="button" aria-label="LightOS home" title="LightOS home" data-i18n-aria="action.lightosHome" data-i18n-title="action.lightosHome">
+            <i data-lucide="house"></i>
+          </button>
           <button class="icon-button" id="settingsButton" type="button" aria-label="Settings" title="Settings" data-i18n-aria="action.settings" data-i18n-title="action.settings">
             <i data-lucide="settings"></i>
           </button>
@@ -81,6 +86,19 @@ export function renderShell(app: HTMLElement): ShellElements {
             <i data-lucide="square-plus"></i>
           </button>
           <p id="statusLine" data-i18n="status.idle">Idle</p>
+        </div>
+        <div class="mobile-shortcuts" id="mobileShortcuts" aria-label="Terminal shortcuts" data-i18n-aria="menu.mobileShortcuts">
+          <button type="button" data-mobile-shortcut="escape" aria-label="Escape">Esc</button>
+          <button type="button" data-mobile-shortcut="tab" aria-label="Tab">Tab</button>
+          <button type="button" data-mobile-shortcut="ctrl" data-mobile-modifier="ctrl" aria-label="Control">Ctrl</button>
+          <button type="button" data-mobile-shortcut="alt" data-mobile-modifier="alt" aria-label="Alt">Alt</button>
+          <button type="button" data-mobile-shortcut="shift" data-mobile-modifier="shift" aria-label="Shift">Shift</button>
+          <button type="button" data-mobile-shortcut="left" data-mobile-repeat="true" aria-label="Left"><i data-lucide="arrow-left"></i></button>
+          <button type="button" data-mobile-shortcut="down" data-mobile-repeat="true" aria-label="Down"><i data-lucide="arrow-down"></i></button>
+          <button type="button" data-mobile-shortcut="up" data-mobile-repeat="true" aria-label="Up"><i data-lucide="arrow-up"></i></button>
+          <button type="button" data-mobile-shortcut="right" data-mobile-repeat="true" aria-label="Right"><i data-lucide="arrow-right"></i></button>
+          <button type="button" data-mobile-shortcut="enter" data-mobile-repeat="true" aria-label="Enter"><i data-lucide="corner-down-left"></i></button>
+          <button type="button" data-mobile-shortcut="paste" aria-label="Paste"><i data-lucide="clipboard-paste"></i></button>
         </div>
       </section>
 
@@ -222,7 +240,9 @@ export function renderShell(app: HTMLElement): ShellElements {
     targetLabel: qs<HTMLElement>("#targetLabel"),
     tabList: qs<HTMLDivElement>("#tabList"),
     terminalStage: qs<HTMLDivElement>("#terminalStage"),
+    mobileShortcuts: qs<HTMLDivElement>("#mobileShortcuts"),
     emptyState: qs<HTMLDivElement>("#emptyState"),
+    homeButton: qs<HTMLButtonElement>("#homeButton"),
     settingsButton: qs<HTMLButtonElement>("#settingsButton"),
     closeSettings: qs<HTMLButtonElement>("#closeSettings"),
     settingsPage: qs<HTMLElement>("#settingsPage"),

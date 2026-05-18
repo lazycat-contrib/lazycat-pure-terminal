@@ -70,7 +70,38 @@ const FIXED_KEYS: Record<string, string> = {
   F12: "\x1b[24~",
 };
 
-export function keyEventToTerminalSequence(event: KeyboardEvent, cursorKeysApp = false): string | undefined {
+type TerminalKeyLike = {
+  key: string;
+  ctrlKey: boolean;
+  altKey: boolean;
+  shiftKey: boolean;
+  metaKey: boolean;
+  isComposing?: boolean;
+};
+
+export type TerminalShortcutModifiers = {
+  ctrl?: boolean;
+  alt?: boolean;
+  shift?: boolean;
+};
+
+const MOBILE_SHORTCUT_KEYS: Record<string, string> = {
+  backspace: "Backspace",
+  delete: "Delete",
+  down: "ArrowDown",
+  end: "End",
+  enter: "Enter",
+  escape: "Escape",
+  home: "Home",
+  left: "ArrowLeft",
+  pageDown: "PageDown",
+  pageUp: "PageUp",
+  right: "ArrowRight",
+  tab: "Tab",
+  up: "ArrowUp",
+};
+
+export function keyEventToTerminalSequence(event: TerminalKeyLike, cursorKeysApp = false): string | undefined {
   if (event.metaKey) return undefined;
   if (event.key === "Tab" && event.shiftKey) return "\x1b[Z";
   if (event.key === "Enter" && event.shiftKey) return "\x1b[13;2u";
@@ -108,6 +139,19 @@ export function shouldHandleTerminalKeyDown(event: KeyboardEvent): boolean {
     || event.key in FUNCTION_FINALS;
 }
 
+export function encodeMobileShortcutKeyInput(inputKey: string, modifiers: TerminalShortcutModifiers = {}): string | undefined {
+  const key = MOBILE_SHORTCUT_KEYS[inputKey] ?? (inputKey.length === 1 ? inputKey : "");
+  if (!key) return undefined;
+  return keyEventToTerminalSequence({
+    key,
+    ctrlKey: Boolean(modifiers.ctrl),
+    altKey: Boolean(modifiers.alt),
+    shiftKey: Boolean(modifiers.shift),
+    metaKey: false,
+    isComposing: false,
+  });
+}
+
 function controlKeySequence(key: string): string | undefined {
   if (key.length === 1) {
     const code = key.toLowerCase().charCodeAt(0);
@@ -122,7 +166,7 @@ function controlKeySequence(key: string): string | undefined {
   return undefined;
 }
 
-function xtermModifier(event: KeyboardEvent): number | undefined {
+function xtermModifier(event: TerminalKeyLike): number | undefined {
   let modifier = 1;
   if (event.shiftKey) modifier += 1;
   if (event.altKey) modifier += 2;

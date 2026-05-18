@@ -207,6 +207,11 @@ fn handle_terminal_control_message(
     text: &str,
     terminal: &ManagedTerminal,
 ) -> anyhow::Result<bool> {
+    if let Some(rest) = text.strip_prefix("input:") {
+        terminal.write_input(rest.as_bytes().to_vec());
+        return Ok(true);
+    }
+
     if let Some(rest) = text.strip_prefix("resize:") {
         let (cols, rows) = parse_resize_payload(rest)?;
         terminal.resize(cols, rows)?;
@@ -215,10 +220,7 @@ fn handle_terminal_control_message(
 
     match serde_json::from_str::<TerminalClientMessage>(text) {
         Ok(TerminalClientMessage::Input { data }) => {
-            let _ = data;
-            warn!(
-                "ignored JSON terminal input message; terminal input must use binary websocket frames"
-            );
+            terminal.write_input(data.into_bytes());
             Ok(true)
         }
         Ok(TerminalClientMessage::Resize { cols, rows }) => {

@@ -7,6 +7,7 @@ export type MessageKey =
   | "action.closeSettings"
   | "action.copySelection"
   | "action.focusTerminal"
+  | "action.lightosHome"
   | "action.newTab"
   | "action.promoteSessionToTab"
   | "action.refreshInstances"
@@ -41,6 +42,7 @@ export type MessageKey =
   | "locale.en"
   | "locale.zhCN"
   | "menu.instances"
+  | "menu.mobileShortcuts"
   | "menu.pane"
   | "section.appearance"
   | "setting.autoRestartSessions"
@@ -63,6 +65,8 @@ export type MessageKey =
   | "status.instance"
   | "status.instanceLoadFailed"
   | "status.instancesLoaded"
+  | "status.lightosHomeFailed"
+  | "status.lightosHomeLoading"
   | "status.loadingGhostty"
   | "status.loadingInstances"
   | "status.noInstances"
@@ -89,6 +93,7 @@ const messages: Record<Language, Record<MessageKey, string>> = {
     "action.closeSettings": "Close settings",
     "action.copySelection": "Copy selection",
     "action.focusTerminal": "Focus terminal",
+    "action.lightosHome": "LightOS home",
     "action.newTab": "New terminal tab",
     "action.promoteSessionToTab": "Move session to new tab",
     "action.refreshInstances": "Refresh instances",
@@ -123,6 +128,7 @@ const messages: Record<Language, Record<MessageKey, string>> = {
     "locale.en": "English",
     "locale.zhCN": "Chinese",
     "menu.instances": "Instances",
+    "menu.mobileShortcuts": "Terminal shortcuts",
     "menu.pane": "Pane menu",
     "section.appearance": "Appearance",
     "setting.autoRestartSessions": "Restart sessions after provider restart",
@@ -145,7 +151,9 @@ const messages: Record<Language, Record<MessageKey, string>> = {
     "status.instance": "Instance",
     "status.instanceLoadFailed": "Instance load failed: {message}",
     "status.instancesLoaded": "Instances loaded",
-    "status.loadingGhostty": "Loading Ghostty core...",
+    "status.lightosHomeFailed": "LightOS home failed: {message}",
+    "status.lightosHomeLoading": "Opening LightOS home...",
+    "status.loadingGhostty": "Loading terminal renderer...",
     "status.loadingInstances": "Loading instances...",
     "status.noInstances": "No instances returned",
     "status.noInstancesVisible": "No LightOS instances visible.",
@@ -170,6 +178,7 @@ const messages: Record<Language, Record<MessageKey, string>> = {
     "action.closeSettings": "关闭设置",
     "action.copySelection": "复制选区",
     "action.focusTerminal": "聚焦终端",
+    "action.lightosHome": "返回 LightOS 首页",
     "action.newTab": "新建终端标签",
     "action.promoteSessionToTab": "将会话提升为新标签",
     "action.refreshInstances": "刷新实例",
@@ -204,6 +213,7 @@ const messages: Record<Language, Record<MessageKey, string>> = {
     "locale.en": "English",
     "locale.zhCN": "中文",
     "menu.instances": "实例",
+    "menu.mobileShortcuts": "终端快捷键",
     "menu.pane": "终端面板菜单",
     "section.appearance": "外观",
     "setting.autoRestartSessions": "Provider 重启后自动恢复会话",
@@ -226,7 +236,9 @@ const messages: Record<Language, Record<MessageKey, string>> = {
     "status.instance": "实例",
     "status.instanceLoadFailed": "实例加载失败：{message}",
     "status.instancesLoaded": "实例已加载",
-    "status.loadingGhostty": "正在加载 Ghostty core...",
+    "status.lightosHomeFailed": "返回 LightOS 首页失败：{message}",
+    "status.lightosHomeLoading": "正在打开 LightOS 首页...",
+    "status.loadingGhostty": "正在加载终端渲染器...",
     "status.loadingInstances": "正在加载实例...",
     "status.noInstances": "没有返回实例",
     "status.noInstancesVisible": "没有可见的 LightOS 实例。",

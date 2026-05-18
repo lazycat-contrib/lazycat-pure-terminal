@@ -1,6 +1,6 @@
 # Pure Terminal
 
-Rust + Ghostty WebShell provider for LazyCat/LightOS.
+Rust + Restty/Ghostty WebShell provider for LazyCat/LightOS.
 
 ## Architecture
 
@@ -24,9 +24,11 @@ Both are protocol placeholders. The backend currently accepts invocations for en
 
 The default screen is terminal-first: tabs and common actions are compact icon controls, while instance selection, themes, fonts, tab orientation, and reserved AI settings live behind the settings entry.
 
-Tabs can be horizontal or vertical. Each tab can also be split into stacked panes with split up/down actions. A split pane is implemented by creating another WebShell session for the same LightOS selector and rendering another `WTerm` instance with `@wterm/ghostty`; it is not a Ghostty-native split API.
+Tabs can be horizontal or vertical. Each tab can also be split into stacked panes with split up/down actions. A split pane is implemented by creating another WebShell session for the same LightOS selector and rendering another Restty terminal instance; the Rust WebSocket data plane remains the owner of PTY bytes.
 
-Themes are applied to the actual `.wterm` element using WTerm CSS variables such as `--term-bg`, `--term-fg`, and `--term-color-0` through `--term-color-15`. Uploaded fonts are stored under `/lzcapp/var/fonts` in LazyCat; local development can override this with `PURE_TERMINAL_FONT_DIR`.
+Themes are applied through Restty's Ghostty theme API and mirrored into local CSS variables for the shell chrome. Built-in terminal fonts are served from the app bundle so the CSP does not depend on CDN font loading. Uploaded fonts are stored under `/lzcapp/var/fonts` in LazyCat; local development can override this with `PURE_TERMINAL_FONT_DIR`.
+
+On mobile, the terminal surface exposes a compact shortcut row for Esc, Tab, modifiers, arrows, Enter, and paste. Restty owns desktop keyboard, paste, and IME input so terminal input is not duplicated by global document handlers.
 
 ## Development
 
@@ -50,10 +52,10 @@ Open `http://127.0.0.1:5173`. The Vite dev server proxies Connect and WebSocket 
 
 Required LazyCat provider pieces are included:
 
-- `package.yml` grants `lightos.manage` and hides the app from the launcher.
+- `package.yml` grants `lightos.manage`. The app is visible in the launcher and can select the first running instance when opened without `?name=`.
 - `lzc-build.yml` builds the Rust binary, builds frontend assets, and exports `lightos.webshell`.
-- `resources/lightos.webshell/default/webshell-provider.json` declares `root_path: "/"` and uses `support_home: false`, matching the current third-party provider contract.
-- `lzc-manifest.yml` routes `/` to the provider executable.
+- `resources/lightos.webshell/default/webshell-provider.json` declares `root_path: "/"` and `support_home: true`.
+- `lzc-manifest.yml` routes `/` to the provider executable and enables multi-instance app metadata.
 
 Build a release with:
 

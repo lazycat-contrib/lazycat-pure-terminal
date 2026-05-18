@@ -33,6 +33,14 @@ pub async fn frontend_asset(Path(path): Path<String>) -> Response {
     asset
 }
 
+pub async fn frontend_font(Path(path): Path<String>) -> Response {
+    let path = format!("fonts/{path}");
+    let Some(asset) = embedded_asset_response(&path) else {
+        return StatusCode::NOT_FOUND.into_response();
+    };
+    asset
+}
+
 fn embedded_asset(path: &str) -> Option<&'static [u8]> {
     embedded_frontend::FRONTEND_ASSETS
         .iter()

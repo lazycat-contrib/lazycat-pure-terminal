@@ -1,11 +1,10 @@
-import "@wterm/dom/css";
 import "./styles.css";
 
 import { createClient } from "@connectrpc/connect";
 import { createConnectTransport } from "@connectrpc/connect-web";
-import { WTerm } from "@wterm/dom";
-import { GhosttyCore } from "@wterm/ghostty";
 import { createIcons, icons } from "lucide";
+import { getBuiltinTheme, parseGhosttyTheme, type GhosttyTheme, type ResttyFontSource } from "restty";
+import { Terminal } from "restty/xterm";
 
 import {
   DEFAULT_SETTINGS,
@@ -15,12 +14,13 @@ import {
   INITIAL_COLS,
   INITIAL_ROWS,
   MAX_FONT_BYTES,
+  PREINSTALLED_FONT_BASE,
   STATUS_REFRESH_MS,
   THEMES,
 } from "./config";
 import { CapabilityService, type Instance, type Session } from "./gen/lazycat/webshell/v1/capability_pb";
 import { translate, type MessageKey } from "./i18n";
-import { keyEventToTerminalSequence, shouldHandleTerminalKeyDown } from "./keyboard";
+import { encodeMobileShortcutKeyInput } from "./keyboard";
 import { loadSettings, saveSettings as persistSettings } from "./settings";
 import { renderShell } from "./shell";
 import type { FontPreset, SplitAxis, SplitNode, SplitPlacement, StoredFont, TerminalPane, TerminalTab, TerminalTheme, Tone } from "./types";
@@ -44,6 +44,13 @@ let renamingTabId: string | undefined;
 let contextPaneId: string | undefined;
 let customFonts: FontPreset[] = [];
 const loadedFontFaces = new Map<string, FontFace>();
+const mobileSticky = {
+  ctrl: false,
+  alt: false,
+  shift: false,
+};
+let mobileRepeatTimer: number | undefined;
+let mobileRepeatInterval: number | undefined;
 
 init().catch((error) => setGlobalStatus(tr("status.startupFailed", { message: errorMessage(error) }), "error"));
 
@@ -184,8 +191,10 @@ function bindActions() {
   elements.emptyNewTab.addEventListener("click", () => void createSelectedTab());
   elements.removeFont.addEventListener("click", () => void removeSelectedFont());
   elements.fitTerminal.addEventListener("click", () => activePane()?.term?.focus());
+  elements.homeButton.addEventListener("click", () => void navigateLightOSHome());
   elements.settingsButton.addEventListener("click", () => openSettings());
   elements.closeSettings.addEventListener("click", () => closeSettings());
+  bindMobileShortcuts();
   elements.instanceButton.addEventListener("click", (event) => {
     event.stopPropagation();
     toggleInstanceMenu();
@@ -240,30 +249,142 @@ function bindActions() {
       void splitActivePane("right");
     }
   });
-  document.addEventListener("beforeinput", (event) => {
-    if (shouldIgnoreGlobalTerminalInput(event.target)) return;
-    const data = event.data;
-    if (!data) return;
-    if (sendActivePaneInput(data)) {
-      event.preventDefault();
-    }
+}
+
+function bindMobileShortcuts() {
+  elements.mobileShortcuts.addEventListener("click", (event) => {
+    const button = event.target instanceof Element
+      ? event.target.closest<HTMLButtonElement>("[data-mobile-shortcut]")
+      : null;
+    if (!button || button.dataset.mobileRepeat === "true") return;
+    void runMobileShortcut(button.dataset.mobileShortcut ?? "");
   });
-  document.addEventListener("paste", (event) => {
-    if (shouldIgnoreGlobalTerminalInput(event.target)) return;
-    const text = event.clipboardData?.getData("text");
-    if (!text) return;
-    if (sendActivePaneInput(text)) {
+
+  elements.mobileShortcuts.querySelectorAll<HTMLButtonElement>("[data-mobile-repeat='true']").forEach((button) => {
+    button.addEventListener("pointerdown", (event) => {
       event.preventDefault();
-    }
+      button.setPointerCapture?.(event.pointerId);
+      const shortcut = button.dataset.mobileShortcut ?? "";
+      void runMobileShortcut(shortcut, { keepModifiers: true });
+      window.clearTimeout(mobileRepeatTimer);
+      window.clearInterval(mobileRepeatInterval);
+      mobileRepeatTimer = window.setTimeout(() => {
+        mobileRepeatInterval = window.setInterval(() => void runMobileShortcut(shortcut, { keepModifiers: true }), 86);
+      }, 360);
+    });
+    const stopRepeat = () => {
+      stopMobileShortcutRepeat();
+      clearMobileSticky();
+    };
+    button.addEventListener("pointerup", stopRepeat);
+    button.addEventListener("pointercancel", stopRepeat);
+    button.addEventListener("lostpointercapture", stopRepeat);
   });
-  document.addEventListener("keydown", (event) => {
-    if (shouldIgnoreGlobalTerminalInput(event.target)) return;
-    const sequence = keyEventToTerminalSequence(event, Boolean(activePane()?.term?.bridge?.cursorKeysApp()));
-    if (!sequence) return;
-    if (sendActivePaneInput(sequence)) {
-      event.preventDefault();
+  updateMobileShortcutState();
+}
+
+function stopMobileShortcutRepeat() {
+  window.clearTimeout(mobileRepeatTimer);
+  window.clearInterval(mobileRepeatInterval);
+  mobileRepeatTimer = undefined;
+  mobileRepeatInterval = undefined;
+}
+
+async function runMobileShortcut(shortcut: string, options: { keepModifiers?: boolean } = {}) {
+  if (shortcut === "ctrl" || shortcut === "alt" || shortcut === "shift") {
+    mobileSticky[shortcut] = !mobileSticky[shortcut];
+    updateMobileShortcutState();
+    activePane()?.term?.focus();
+    return;
+  }
+
+  if (shortcut === "paste") {
+    let text = "";
+    try {
+      text = await navigator.clipboard?.readText?.() ?? "";
+    } catch {
+      text = "";
     }
+    if (text) sendActivePaneInput(text);
+    clearMobileSticky();
+    activePane()?.term?.focus();
+    return;
+  }
+
+  const data = encodeMobileShortcutKeyInput(shortcut, mobileSticky);
+  if (data) {
+    sendActivePaneInput(data);
+  }
+  if (!options.keepModifiers) {
+    clearMobileSticky();
+  }
+  activePane()?.term?.focus();
+}
+
+function clearMobileSticky() {
+  mobileSticky.ctrl = false;
+  mobileSticky.alt = false;
+  mobileSticky.shift = false;
+  updateMobileShortcutState();
+}
+
+function updateMobileShortcutState() {
+  elements.mobileShortcuts.querySelectorAll<HTMLButtonElement>("[data-mobile-modifier]").forEach((button) => {
+    const modifier = button.dataset.mobileModifier;
+    const active = modifier === "ctrl" || modifier === "alt" || modifier === "shift" ? mobileSticky[modifier] : false;
+    button.classList.toggle("active", active);
+    button.setAttribute("aria-pressed", String(active));
   });
+}
+
+async function navigateLightOSHome() {
+  closeInstanceMenu();
+  closePaneMenu();
+  elements.homeButton.disabled = true;
+  setGlobalStatus(tr("status.lightosHomeLoading"));
+  try {
+    const target = await resolveLightOSHomeUrl();
+    window.location.assign(target);
+  } catch (error) {
+    elements.homeButton.disabled = false;
+    setGlobalStatus(tr("status.lightosHomeFailed", { message: errorMessage(error) }), "error");
+  }
+}
+
+async function resolveLightOSHomeUrl(): Promise<string> {
+  const response = await fetch(new URL("./api/lightos-admin-info", window.location.href), {
+    cache: "no-store",
+    credentials: "same-origin",
+  });
+  if (response.ok) {
+    const info = await response.json() as { base_url?: string };
+    const baseUrl = info.base_url?.trim();
+    if (baseUrl) return buildLightOSHomeUrl(baseUrl);
+  }
+
+  const referrerUrl = referrerHomeUrl();
+  if (referrerUrl) return referrerUrl;
+  throw new Error(response.ok ? "LightOS admin base_url is empty" : await response.text());
+}
+
+function buildLightOSHomeUrl(value: string): string {
+  const target = new URL(value, window.location.href);
+  target.searchParams.set("view", "home");
+  return target.toString();
+}
+
+function referrerHomeUrl(): string {
+  try {
+    if (!document.referrer) return "";
+    const referrer = new URL(document.referrer);
+    if (referrer.origin === window.location.origin) return "";
+    referrer.pathname = "/";
+    referrer.search = "";
+    referrer.hash = "";
+    return buildLightOSHomeUrl(referrer.toString());
+  } catch {
+    return "";
+  }
 }
 
 function openSettings() {
@@ -371,9 +492,10 @@ function applySettings(options: { resizeTerminals?: boolean } = {}) {
   elements.debugMode.checked = settings.debugMode;
 
   for (const pane of allPanes()) {
-    applyThemeToMount(pane.mount);
+    applyTerminalAppearance(pane);
     if (options.resizeTerminals) {
-      pane.term?.resize(pane.term.cols, pane.term.rows);
+      pane.term?.restty?.setFontSize(settings.fontSize);
+      pane.term?.restty?.updateSize(true);
     }
   }
   renderTabs();
@@ -393,22 +515,50 @@ function applyThemeToMount(mount: HTMLElement) {
   const font = currentFont();
   const themeClasses = THEMES.map((item) => item.className).filter((value): value is string => Boolean(value));
   mount.classList.remove(...themeClasses);
-  const wtermElement = getWTermElement(mount);
-  wtermElement.classList.remove(...themeClasses);
   if (theme.className) {
-    wtermElement.classList.add(theme.className);
+    mount.classList.add(theme.className);
   }
-  wtermElement.classList.remove("cursor-shape-block", "cursor-shape-bar", "cursor-shape-underline");
-  wtermElement.classList.add(`cursor-shape-${settings.cursorShape}`);
-  wtermElement.classList.toggle("cursor-blink", settings.cursorBlink);
-  wtermElement.style.setProperty("--term-font-family", font.family);
-  wtermElement.style.setProperty("--term-font-size", `${settings.fontSize}px`);
-  wtermElement.style.setProperty("--term-line-height", String(settings.lineHeight));
+  mount.classList.remove("cursor-shape-block", "cursor-shape-bar", "cursor-shape-underline");
+  mount.classList.add(`cursor-shape-${settings.cursorShape}`);
+  mount.classList.toggle("cursor-blink", settings.cursorBlink);
+  mount.style.setProperty("--term-font-family", font.family);
+  mount.style.setProperty("--term-font-size", `${settings.fontSize}px`);
+  mount.style.setProperty("--term-line-height", String(settings.lineHeight));
 }
 
-function getWTermElement(mount: HTMLElement): HTMLElement {
-  if (mount.classList.contains("wterm")) return mount;
-  return mount.querySelector<HTMLElement>(".wterm") ?? mount;
+function applyTerminalAppearance(pane: TerminalPane) {
+  applyThemeToMount(pane.mount);
+  const term = pane.term;
+  if (!term?.restty) return;
+  const theme = currentResttyTheme();
+  if (theme) {
+    term.restty.applyTheme(theme, currentTheme().label);
+  }
+  term.restty.setFontSize(settings.fontSize);
+  void term.restty.setFontSources(currentResttyFontSources()).catch((error) => {
+    setFontStatus(tr("status.fontLoadFailed", { message: errorMessage(error) }), "error");
+  });
+  term.restty.updateSize(true);
+}
+
+function currentResttyTheme(): GhosttyTheme | null {
+  const theme = currentTheme();
+  if (theme.ghosttySource) return parseGhosttyTheme(theme.ghosttySource);
+  return getBuiltinTheme(theme.ghosttyName) ?? getBuiltinTheme("Ghostty Default Style Dark");
+}
+
+function currentResttyFontSources(): ResttyFontSource[] {
+  const font = currentFont();
+  const sources = font.resttySources ?? FONT_PRESETS[0]?.resttySources ?? [];
+  return sources.map(resolveResttyFontSource);
+}
+
+function resolveResttyFontSource(source: ResttyFontSource): ResttyFontSource {
+  if (source.type !== "url") return source;
+  return {
+    ...source,
+    url: new URL(source.url, window.location.href).toString(),
+  };
 }
 
 async function loadUploadedFonts() {
@@ -514,6 +664,14 @@ async function registerStoredFont(font: StoredFont): Promise<FontPreset | undefi
       id: presetId,
       label: font.label,
       family: quoteFontFamily(font.family),
+      resttySources: [
+        { type: "url", url: fontUrl, label: font.label },
+        {
+          type: "url",
+          url: `${PREINSTALLED_FONT_BASE}SymbolsNerdFontMono-Regular.ttf`,
+          label: "Symbols Nerd Font Mono",
+        },
+      ],
       custom: true,
     };
   } catch (error) {
@@ -793,10 +951,10 @@ function makePane(tab: TerminalTab): TerminalPane {
     connectedOnce: false,
     exited: false,
     closing: false,
+    titleBuffer: "",
     cols: INITIAL_COLS,
     rows: INITIAL_ROWS,
   };
-  mount.addEventListener("keydown", (event) => handleTerminalKeyDown(pane, event), true);
   mount.addEventListener("mouseup", () => {
     if (settings.copyOnSelect) {
       scheduleCopySelection();
@@ -827,7 +985,7 @@ async function createPane(tab: TerminalTab, placement: SplitPlacement) {
       cols: INITIAL_COLS,
       rows: INITIAL_ROWS,
       metadata: {
-        frontend: "wterm-ghostty",
+        frontend: "restty-xterm",
         tabId: tab.id,
         paneId: pane.id,
         tabTitle: tab.customTitle?.trim() ?? "",
@@ -958,43 +1116,70 @@ function updatePaneActiveState(tab: TerminalTab) {
 }
 
 async function mountTerminal(pane: TerminalPane) {
-  pane.term?.destroy();
+  pane.term?.dispose();
   pane.mount.innerHTML = "";
   applyThemeToMount(pane.mount);
+  pane.decoder = new TextDecoder();
 
-  const core = await GhosttyCore.load({
-    scrollbackLimit: settings.scrollbackLimit,
+  const term = new Terminal({
+    cols: pane.cols || INITIAL_COLS,
+    rows: pane.rows || INITIAL_ROWS,
+    createInitialPane: true,
+    shortcuts: false,
+    defaultContextMenu: false,
+    paneStyles: {
+      enabled: true,
+      splitBackground: "var(--term-bg, #050a12)",
+      paneBackground: "var(--term-bg, #050a12)",
+      inactivePaneOpacity: 1,
+      activePaneOpacity: 1,
+      opacityTransitionMs: 0,
+      dividerThicknessPx: 0,
+    },
+    searchUi: false,
+    fontSources: currentResttyFontSources(),
+    appOptions: {
+      renderer: "auto",
+      fontPreset: "none",
+      fontSize: settings.fontSize,
+      ligatures: true,
+      autoResize: true,
+      attachWindowEvents: true,
+      attachCanvasEvents: true,
+      touchSelectionMode: "long-press",
+      maxScrollbackBytes: Math.max(1_000_000, settings.scrollbackLimit * 160),
+      callbacks: {
+        onGridSize: (cols, rows) => handleTerminalResize(pane, cols, rows),
+      },
+    },
   });
   if (pane.closing) return;
-
-  const term = new WTerm(pane.mount, {
-    core,
-    cols: INITIAL_COLS,
-    rows: INITIAL_ROWS,
-    autoResize: true,
-    cursorBlink: settings.cursorBlink,
-    debug: settings.debugMode,
-    onTitle: (title) => updatePaneTitle(pane, title),
-    onData: (data) => {
-      if (pane.socket?.readyState === WebSocket.OPEN) {
-        pane.socket.send(terminalEncoder.encode(data));
-      }
-    },
-    onResize: (cols, rows) => {
-      pane.cols = cols;
-      pane.rows = rows;
-      if (pane.socket?.readyState === WebSocket.OPEN) {
-        pane.socket.send(JSON.stringify({ type: "resize", cols, rows }));
-      }
-      updateActiveDetails();
-    },
+  term.onData((data) => {
+    sendPaneInput(pane, data);
   });
   pane.term = term;
-  await term.init();
-  applyThemeToMount(pane.mount);
+  term.open(pane.mount);
+  applyTerminalAppearance(pane);
   if (activeTabId === pane.tabId && activePane()?.id === pane.id) {
     term.focus();
   }
+}
+
+function handleTerminalResize(pane: TerminalPane, cols: number, rows: number) {
+  if (!Number.isFinite(cols) || !Number.isFinite(rows)) return;
+  const nextCols = Math.max(1, Math.trunc(cols));
+  const nextRows = Math.max(1, Math.trunc(rows));
+  if (pane.cols === nextCols && pane.rows === nextRows) return;
+  pane.cols = nextCols;
+  pane.rows = nextRows;
+  if (pane.term) {
+    pane.term.cols = nextCols;
+    pane.term.rows = nextRows;
+  }
+  if (pane.socket?.readyState === WebSocket.OPEN) {
+    pane.socket.send(JSON.stringify({ type: "resize", cols: nextCols, rows: nextRows }));
+  }
+  updateActiveDetails();
 }
 
 function openSocket(pane: TerminalPane) {
@@ -1002,8 +1187,8 @@ function openSocket(pane: TerminalPane) {
   const url = new URL("./ws/terminal", window.location.href);
   url.protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
   url.searchParams.set("session_id", pane.session.id);
-  url.searchParams.set("cols", String(pane.term?.cols ?? INITIAL_COLS));
-  url.searchParams.set("rows", String(pane.term?.rows ?? INITIAL_ROWS));
+  url.searchParams.set("cols", String(pane.cols || pane.term?.cols || INITIAL_COLS));
+  url.searchParams.set("rows", String(pane.rows || pane.term?.rows || INITIAL_ROWS));
   url.searchParams.set("restart", String(settings.autoRestartSessions));
   url.searchParams.set("replay", String(!pane.connectedOnce));
   url.searchParams.set("tab_id", pane.tabId);
@@ -1014,6 +1199,7 @@ function openSocket(pane: TerminalPane) {
   url.searchParams.set("pane_order", String(paneOrder(tabForPane(pane), pane)));
 
   pane.exited = false;
+  pane.decoder = new TextDecoder();
   pane.socket = new WebSocket(url);
   pane.socket.binaryType = "arraybuffer";
   pane.socket.addEventListener("open", () => {
@@ -1027,7 +1213,10 @@ function openSocket(pane: TerminalPane) {
     }
   });
   pane.socket.addEventListener("message", (event) => handleSocketMessage(pane, event));
-  pane.socket.addEventListener("close", () => scheduleReconnect(pane));
+  pane.socket.addEventListener("close", () => {
+    flushPaneDecoder(pane);
+    scheduleReconnect(pane);
+  });
   pane.socket.addEventListener("error", () => setPaneStatus(pane, tr("status.socketError"), "error"));
 }
 
@@ -1086,11 +1275,11 @@ function sendPanePlacement(pane: TerminalPane) {
 
 function handleSocketMessage(pane: TerminalPane, event: MessageEvent) {
   if (event.data instanceof ArrayBuffer) {
-    pane.term?.write(new Uint8Array(event.data));
+    writeTerminalBytes(pane, new Uint8Array(event.data));
     return;
   }
   if (event.data instanceof Blob) {
-    event.data.arrayBuffer().then((buffer) => pane.term?.write(new Uint8Array(buffer)));
+    event.data.arrayBuffer().then((buffer) => writeTerminalBytes(pane, new Uint8Array(buffer)));
     return;
   }
   handleServerText(pane, String(event.data));
@@ -1109,8 +1298,36 @@ function handleServerText(pane: TerminalPane, text: string) {
       setPaneStatus(pane, tr("status.processExited", { code: event.exit_code ?? -1 }), "error");
     }
   } catch {
-    pane.term?.write(text);
+    writeTerminalText(pane, text);
   }
+}
+
+function writeTerminalBytes(pane: TerminalPane, bytes: Uint8Array) {
+  const decoder = pane.decoder ??= new TextDecoder();
+  const text = decoder.decode(bytes, { stream: true });
+  if (text) writeTerminalText(pane, text);
+}
+
+function flushPaneDecoder(pane: TerminalPane) {
+  const text = pane.decoder?.decode();
+  if (text) writeTerminalText(pane, text);
+  pane.decoder = undefined;
+}
+
+function writeTerminalText(pane: TerminalPane, text: string) {
+  observeTerminalTitle(pane, text);
+  pane.term?.write(text);
+}
+
+function observeTerminalTitle(pane: TerminalPane, text: string) {
+  pane.titleBuffer = `${pane.titleBuffer}${text}`.slice(-4096);
+  const pattern = /\x1b\](?:0|2);([\s\S]*?)(?:\x07|\x1b\\)/g;
+  let match: RegExpExecArray | null;
+  let title: string | undefined;
+  while ((match = pattern.exec(pane.titleBuffer)) !== null) {
+    title = match[1]?.replace(/[\x00-\x1f\x7f]/g, "").trim();
+  }
+  if (title) updatePaneTitle(pane, title);
 }
 
 function scheduleReconnect(pane: TerminalPane) {
@@ -1366,7 +1583,8 @@ function closePaneSession(pane: TerminalPane) {
   window.clearTimeout(pane.reconnectTimer);
   pane.socket?.close();
   pane.socket = undefined;
-  pane.term?.destroy();
+  flushPaneDecoder(pane);
+  pane.term?.dispose();
   pane.term = undefined;
   if (pane.session?.id) {
     client.closeSession({ sessionId: pane.session.id }).catch(() => undefined);
@@ -1440,28 +1658,6 @@ function sendPaneInput(pane: TerminalPane, data: string): boolean {
   return true;
 }
 
-function handleTerminalKeyDown(pane: TerminalPane, event: KeyboardEvent) {
-  if (!shouldHandleTerminalKeyDown(event) || shouldLetBrowserHandleTerminalKey(event)) return;
-  const sequence = keyEventToTerminalSequence(event, Boolean(pane.term?.bridge?.cursorKeysApp()));
-  if (!sequence) return;
-  event.preventDefault();
-  event.stopPropagation();
-  event.stopImmediatePropagation();
-  sendPaneInput(pane, sequence);
-}
-
-function shouldLetBrowserHandleTerminalKey(event: KeyboardEvent): boolean {
-  const key = event.key.toLowerCase();
-  if ((event.ctrlKey || event.metaKey) && key === "c" && window.getSelection()?.toString()) return true;
-  return (event.ctrlKey || event.metaKey) && key === "v";
-}
-
-function shouldIgnoreGlobalTerminalInput(target: EventTarget | null): boolean {
-  if (!(target instanceof Element)) return false;
-  if (target.closest(".settings-page, .switcher-menu, .topbar, input, textarea, select, button")) return true;
-  return Boolean(target.closest(".wterm textarea"));
-}
-
 function activeTab(): TerminalTab | undefined {
   return tabs.find((tab) => tab.id === activeTabId);
 }
@@ -1513,6 +1709,19 @@ function scheduleCopySelection() {
 }
 
 async function copySelection(report: boolean): Promise<boolean> {
+  const restty = activePane()?.term?.restty;
+  if (restty) {
+    try {
+      if (await restty.copySelectionToClipboard()) {
+        if (report) setGlobalStatus(tr("status.selectionCopied"), "ok");
+        return true;
+      }
+    } catch (error) {
+      if (report) setGlobalStatus(tr("status.copyFailed", { message: errorMessage(error) }), "error");
+      return false;
+    }
+  }
+
   const text = window.getSelection()?.toString() ?? "";
   if (!text) {
     if (report) setGlobalStatus(tr("status.noSelection"));
