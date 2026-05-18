@@ -85,6 +85,7 @@ impl CapabilityService for CapabilityServiceImpl {
             .filter(|value| !value.is_empty())
             .ok_or_else(|| ConnectError::invalid_argument("selector is required"))?;
         validate_selector(selector)?;
+        lightos::authorize_selector(selector, true).await?;
         let cols = normalize_dimension(request.cols, DEFAULT_COLS, MAX_COLS, "cols")?;
         let rows = normalize_dimension(request.rows, DEFAULT_ROWS, MAX_ROWS, "rows")?;
         let host = host_from_selector(selector);
@@ -167,10 +168,23 @@ impl CapabilityService for CapabilityServiceImpl {
             .selector
             .map(str::trim)
             .filter(|value| !value.is_empty());
+        if let Some(selector) = selector {
+            lightos::authorize_selector(selector, false).await?;
+        }
+        let visible_selectors = if selector.is_none() {
+            Some(lightos::authorized_selectors().await?)
+        } else {
+            None
+        };
         let sessions = self.sessions_read()?;
         let sessions = sessions
             .values()
             .filter(|session| selector.is_none_or(|value| session.selector == value))
+            .filter(|session| {
+                visible_selectors
+                    .as_ref()
+                    .is_none_or(|selectors| selectors.contains(&session.selector))
+            })
             .map(SessionRecord::to_proto)
             .collect();
         ConnectResponse::ok(ListSessionsResponse {

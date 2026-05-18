@@ -23,6 +23,7 @@ import { translate, type MessageKey } from "./i18n";
 import { encodeMobileShortcutKeyInput } from "./keyboard";
 import { loadSettings, saveSettings as persistSettings } from "./settings";
 import { renderShell } from "./shell";
+import { MAX_PENDING_INPUT_BYTES, monotonicSequence, parseTerminalServerMessage } from "./terminal-protocol";
 import type { FontPreset, SplitAxis, SplitNode, SplitPlacement, StoredFont, TerminalPane, TerminalTab, TerminalTheme, Tone } from "./types";
 import { clampNumber, errorMessage, escapeAttr, escapeHtml, newId, qs, selectorLabel } from "./utils";
 
@@ -51,6 +52,7 @@ const mobileSticky = {
 };
 let mobileRepeatTimer: number | undefined;
 let mobileRepeatInterval: number | undefined;
+let terminalResizeTimer: number | undefined;
 
 init().catch((error) => setGlobalStatus(tr("status.startupFailed", { message: errorMessage(error) }), "error"));
 
@@ -194,6 +196,7 @@ function bindActions() {
   elements.homeButton.addEventListener("click", () => void navigateLightOSHome());
   elements.settingsButton.addEventListener("click", () => openSettings());
   elements.closeSettings.addEventListener("click", () => closeSettings());
+  bindLifecycleEvents();
   bindMobileShortcuts();
   elements.instanceButton.addEventListener("click", (event) => {
     event.stopPropagation();
@@ -248,6 +251,22 @@ function bindActions() {
       event.preventDefault();
       void splitActivePane("right");
     }
+  });
+}
+
+function bindLifecycleEvents() {
+  window.addEventListener("online", () => void connectRestoredPanes());
+  window.addEventListener("focus", () => {
+    scheduleTerminalSizeRefresh();
+    void connectRestoredPanes();
+  });
+  window.addEventListener("resize", scheduleTerminalSizeRefresh);
+  window.addEventListener("orientationchange", scheduleTerminalSizeRefresh);
+  window.visualViewport?.addEventListener("resize", scheduleTerminalSizeRefresh);
+  document.addEventListener("visibilitychange", () => {
+    if (document.hidden) return;
+    scheduleTerminalSizeRefresh();
+    void connectRestoredPanes();
   });
 }
 
@@ -948,7 +967,10 @@ function makePane(tab: TerminalTab): TerminalPane {
     tone: "neutral",
     mount,
     reconnectDelay: 1000,
-    connectedOnce: false,
+    pendingInput: [],
+    pendingInputBytes: 0,
+    replaying: false,
+    lastOutputSequence: 0,
     exited: false,
     closing: false,
     titleBuffer: "",
@@ -1184,13 +1206,15 @@ function handleTerminalResize(pane: TerminalPane, cols: number, rows: number) {
 
 function openSocket(pane: TerminalPane) {
   if (!pane.session?.id) return;
+  if (pane.socket?.readyState === WebSocket.OPEN || pane.socket?.readyState === WebSocket.CONNECTING) return;
   const url = new URL("./ws/terminal", window.location.href);
   url.protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
   url.searchParams.set("session_id", pane.session.id);
   url.searchParams.set("cols", String(pane.cols || pane.term?.cols || INITIAL_COLS));
   url.searchParams.set("rows", String(pane.rows || pane.term?.rows || INITIAL_ROWS));
   url.searchParams.set("restart", String(settings.autoRestartSessions));
-  url.searchParams.set("replay", String(!pane.connectedOnce));
+  url.searchParams.set("replay", "true");
+  url.searchParams.set("after", String(pane.lastOutputSequence));
   url.searchParams.set("tab_id", pane.tabId);
   url.searchParams.set("pane_id", pane.id);
   url.searchParams.set("tab_title", tabForPane(pane)?.customTitle?.trim() ?? "");
@@ -1199,12 +1223,12 @@ function openSocket(pane: TerminalPane) {
   url.searchParams.set("pane_order", String(paneOrder(tabForPane(pane), pane)));
 
   pane.exited = false;
+  pane.replaying = true;
   pane.decoder = new TextDecoder();
   pane.socket = new WebSocket(url);
   pane.socket.binaryType = "arraybuffer";
   pane.socket.addEventListener("open", () => {
     pane.reconnectDelay = 1000;
-    pane.connectedOnce = true;
     sendRestartPolicy(pane);
     sendPanePlacement(pane);
     setPaneStatus(pane, tr("status.connected"), "ok");
@@ -1214,6 +1238,7 @@ function openSocket(pane: TerminalPane) {
   });
   pane.socket.addEventListener("message", (event) => handleSocketMessage(pane, event));
   pane.socket.addEventListener("close", () => {
+    pane.replaying = false;
     flushPaneDecoder(pane);
     scheduleReconnect(pane);
   });
@@ -1274,31 +1299,45 @@ function sendPanePlacement(pane: TerminalPane) {
 }
 
 function handleSocketMessage(pane: TerminalPane, event: MessageEvent) {
+  if (pane.closing) return;
   if (event.data instanceof ArrayBuffer) {
     writeTerminalBytes(pane, new Uint8Array(event.data));
     return;
   }
   if (event.data instanceof Blob) {
-    event.data.arrayBuffer().then((buffer) => writeTerminalBytes(pane, new Uint8Array(buffer)));
+    event.data.arrayBuffer().then((buffer) => {
+      if (!pane.closing) writeTerminalBytes(pane, new Uint8Array(buffer));
+    });
     return;
   }
   handleServerText(pane, String(event.data));
 }
 
 function handleServerText(pane: TerminalPane, text: string) {
-  try {
-    const event = JSON.parse(text) as { type?: string; message?: string; exit_code?: number };
-    if (event.type === "ready") setPaneStatus(pane, tr("status.shellReady"), "ok");
-    if (event.type === "error") setPaneStatus(pane, event.message ?? tr("status.terminalError"), "error");
-    if (event.type === "process-exit") {
-      pane.exited = true;
-      if (pane.session) {
-        pane.session.status = "exited";
-      }
-      setPaneStatus(pane, tr("status.processExited", { code: event.exit_code ?? -1 }), "error");
-    }
-  } catch {
+  const event = parseTerminalServerMessage(text);
+  if (!event) {
     writeTerminalText(pane, text);
+    return;
+  }
+  if (event.type === "ready") {
+    setPaneStatus(pane, tr("status.shellReady"), "ok");
+  } else if (event.type === "error") {
+    pane.replaying = false;
+    setPaneStatus(pane, event.message ?? tr("status.terminalError"), "error");
+  } else if (event.type === "process-exit") {
+    pane.replaying = false;
+    pane.exited = true;
+    clearPendingInput(pane);
+    if (pane.session) {
+      pane.session.status = "exited";
+    }
+    setPaneStatus(pane, tr("status.processExited", { code: event.exit_code ?? -1 }), "error");
+  } else if (event.type === "output-sequence") {
+    pane.lastOutputSequence = monotonicSequence(pane.lastOutputSequence, event.sequence);
+  } else if (event.type === "replay-complete") {
+    pane.lastOutputSequence = monotonicSequence(pane.lastOutputSequence, event.last_sequence);
+    pane.replaying = false;
+    flushPendingInput(pane);
   }
 }
 
@@ -1337,6 +1376,15 @@ function scheduleReconnect(pane: TerminalPane) {
   pane.reconnectDelay = Math.min(pane.reconnectDelay * 2, 30000);
   setPaneStatus(pane, tr("status.reconnecting", { seconds: Math.round(delay / 1000) }), "error");
   pane.reconnectTimer = window.setTimeout(() => openSocket(pane), delay);
+}
+
+function scheduleTerminalSizeRefresh() {
+  window.clearTimeout(terminalResizeTimer);
+  terminalResizeTimer = window.setTimeout(() => {
+    for (const pane of allPanes()) {
+      pane.term?.restty?.updateSize(true);
+    }
+  }, 80);
 }
 
 function activateTab(tabId: string) {
@@ -1584,6 +1632,7 @@ function closePaneSession(pane: TerminalPane) {
   pane.socket?.close();
   pane.socket = undefined;
   flushPaneDecoder(pane);
+  clearPendingInput(pane);
   pane.term?.dispose();
   pane.term = undefined;
   if (pane.session?.id) {
@@ -1650,12 +1699,56 @@ function sendActivePaneInput(data: string): boolean {
 }
 
 function sendPaneInput(pane: TerminalPane, data: string): boolean {
-  if (!pane || pane.socket?.readyState !== WebSocket.OPEN) {
+  if (!pane || pane.closing || pane.exited || !pane.session?.id) {
     activePane()?.term?.focus();
     return false;
   }
-  pane.socket.send(terminalEncoder.encode(data));
+  if (pane.socket?.readyState === WebSocket.OPEN && !pane.replaying) {
+    pane.socket.send(terminalEncoder.encode(data));
+    return true;
+  }
+  if (!queuePaneInput(pane, data)) {
+    activePane()?.term?.focus();
+    return false;
+  }
+  if (pane.socket?.readyState !== WebSocket.CONNECTING && pane.socket?.readyState !== WebSocket.OPEN) {
+    openSocket(pane);
+  }
   return true;
+}
+
+function queuePaneInput(pane: TerminalPane, data: string): boolean {
+  const bytes = terminalEncoder.encode(data).byteLength;
+  if (bytes <= 0 || bytes > MAX_PENDING_INPUT_BYTES) return false;
+  while (pane.pendingInputBytes + bytes > MAX_PENDING_INPUT_BYTES) {
+    const dropped = pane.pendingInput.shift();
+    if (!dropped) break;
+    pane.pendingInputBytes = Math.max(0, pane.pendingInputBytes - terminalEncoder.encode(dropped).byteLength);
+  }
+  pane.pendingInput.push(data);
+  pane.pendingInputBytes += bytes;
+  return true;
+}
+
+function flushPendingInput(pane: TerminalPane) {
+  if (pane.socket?.readyState !== WebSocket.OPEN || pane.replaying) return;
+  while (pane.pendingInput.length) {
+    const data = pane.pendingInput.shift() ?? "";
+    pane.pendingInputBytes = Math.max(0, pane.pendingInputBytes - terminalEncoder.encode(data).byteLength);
+    try {
+      pane.socket.send(terminalEncoder.encode(data));
+    } catch {
+      pane.pendingInput.unshift(data);
+      pane.pendingInputBytes += terminalEncoder.encode(data).byteLength;
+      scheduleReconnect(pane);
+      return;
+    }
+  }
+}
+
+function clearPendingInput(pane: TerminalPane) {
+  pane.pendingInput = [];
+  pane.pendingInputBytes = 0;
 }
 
 function activeTab(): TerminalTab | undefined {

@@ -83,7 +83,10 @@ export type TerminalPane = {
   titleBuffer: string;
   reconnectTimer?: number;
   reconnectDelay: number;
-  connectedOnce: boolean;
+  pendingInput: string[];
+  pendingInputBytes: number;
+  replaying: boolean;
+  lastOutputSequence: number;
   exited: boolean;
   closing: boolean;
   cols: number;

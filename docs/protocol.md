@@ -7,7 +7,9 @@
 - binary WebSocket frames carry PTY bytes from backend to frontend;
 - binary or text frames carry user input from frontend to backend;
 - JSON text frames carry resize and close controls;
-- backend sends JSON text frames for `ready`, `error`, and `process-exit`.
+- backend sends JSON text frames for `ready`, `error`, `process-exit`, `output-sequence`, and `replay-complete`.
+
+Reconnect replay uses `/ws/terminal?...&replay=true&after=<last_sequence>`. PTY bytes still travel as raw binary frames; the following `output-sequence` control frame identifies the monotonic output sequence that was just delivered. The frontend queues input while replay is active and flushes it after `replay-complete`.
 
 Accepted client text messages:
 

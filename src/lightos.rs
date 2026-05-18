@@ -1,3 +1,4 @@
+use std::collections::HashSet;
 use std::time::Duration;
 
 use connectrpc::ConnectError;
@@ -7,6 +8,7 @@ use tokio::time::timeout;
 
 use crate::config::LIGHTOSCTL;
 use crate::proto::lazycat::webshell::v1::Instance;
+use crate::validation::validate_selector;
 
 #[derive(Debug, Deserialize)]
 struct LightOsInstance {
@@ -29,18 +31,14 @@ pub struct AdminInfo {
 }
 
 pub async fn list_instances() -> Result<Vec<Instance>, ConnectError> {
-    let output = run_lightosctl(["ps"]).await?;
-    let mut items: Vec<LightOsInstance> = serde_json::from_slice(&output)
-        .map_err(|err| ConnectError::internal(format!("invalid lightosctl ps JSON: {err}")))?;
+    let mut items = load_lightos_instances().await?;
     items.sort_by_key(|item| item.status != "running");
     Ok(items
         .into_iter()
         .filter_map(|item| {
-            if item.name.trim().is_empty() || item.owner_deploy_id.trim().is_empty() {
-                return None;
-            }
+            let selector = selector_for_instance(&item)?;
             Some(Instance {
-                selector: Some(format!("{}@{}", item.name, item.owner_deploy_id)),
+                selector: Some(selector),
                 name: Some(item.name),
                 owner_deploy_id: Some(item.owner_deploy_id),
                 status: Some(item.status),
@@ -48,6 +46,53 @@ pub async fn list_instances() -> Result<Vec<Instance>, ConnectError> {
             })
         })
         .collect())
+}
+
+pub async fn authorized_selectors() -> Result<HashSet<String>, ConnectError> {
+    Ok(load_lightos_instances()
+        .await?
+        .iter()
+        .filter_map(selector_for_instance)
+        .collect())
+}
+
+pub async fn authorize_selector(selector: &str, require_running: bool) -> Result<(), ConnectError> {
+    validate_selector(selector)?;
+    let instances = load_lightos_instances().await?;
+    let Some(instance) = instances
+        .iter()
+        .find(|item| selector_for_instance(item).is_some_and(|value| value == selector))
+    else {
+        return Err(ConnectError::permission_denied(
+            "selector is not visible to this LightOS account",
+        ));
+    };
+    if require_running && instance.status != "running" {
+        return Err(ConnectError::failed_precondition(format!(
+            "target instance is not running: {}",
+            instance.status
+        )));
+    }
+    Ok(())
+}
+
+async fn load_lightos_instances() -> Result<Vec<LightOsInstance>, ConnectError> {
+    let output = run_lightosctl(["ps"]).await?;
+    parse_lightos_instances(&output)
+}
+
+fn parse_lightos_instances(output: &[u8]) -> Result<Vec<LightOsInstance>, ConnectError> {
+    serde_json::from_slice(output)
+        .map_err(|err| ConnectError::internal(format!("invalid lightosctl ps JSON: {err}")))
+}
+
+fn selector_for_instance(item: &LightOsInstance) -> Option<String> {
+    let name = item.name.trim();
+    let owner_deploy_id = item.owner_deploy_id.trim();
+    if name.is_empty() || owner_deploy_id.is_empty() {
+        return None;
+    }
+    Some(format!("{name}@{owner_deploy_id}"))
 }
 
 pub async fn admin_info() -> Result<AdminInfo, ConnectError> {
@@ -108,7 +153,24 @@ async fn run_lightosctl<const N: usize>(args: [&str; N]) -> Result<Vec<u8>, Conn
 
 #[cfg(test)]
 mod tests {
-    use super::parse_admin_info;
+    use super::{parse_admin_info, parse_lightos_instances, selector_for_instance};
+
+    #[test]
+    fn parses_lightos_instances_and_trims_selector_parts() {
+        let instances = parse_lightos_instances(
+            br#"[
+                {"name":" app ","owner_deploy_id":" owner ","status":"running"},
+                {"name":"","owner_deploy_id":"skip","status":"running"}
+            ]"#,
+        )
+        .expect("lightos instances parse");
+
+        assert_eq!(
+            instances.first().and_then(selector_for_instance).as_deref(),
+            Some("app@owner")
+        );
+        assert_eq!(instances.get(1).and_then(selector_for_instance), None);
+    }
 
     #[test]
     fn parses_admin_info_with_base_url() {
